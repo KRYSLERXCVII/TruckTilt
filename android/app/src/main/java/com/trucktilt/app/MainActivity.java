@@ -147,19 +147,21 @@ public class MainActivity extends Activity implements SensorEventListener {
             // is physically close to the original calibrated orientation.
             if (gyroReferenceValid && view != null && view.mode == 0 &&
                 gyroStillSinceMs != 0L &&
-                System.currentTimeMillis() - gyroStillSinceMs > 300L) {
+                System.currentTimeMillis() - gyroStillSinceMs > 120L) {
 
                 float currentZ = (float)Math.toDegrees(o[2]);
                 float fromReference = normalizeDegrees(currentZ - gyroReferenceZ);
 
                 // Only correct when the physical phone is genuinely close to
                 // the calibrated center. A sharp turn is therefore untouched.
-                if (Math.abs(fromReference) < 7f) {
-                    // Pull accumulated drift toward the real physical center
-                    // slowly, avoiding visible wobble.
-                    gyroAngle *= 0.92f;
+                if (Math.abs(fromReference) < 12f) {
+                    // Once the phone is physically back near the calibrated
+                    // center, remove accumulated gyro drift quickly. The gyro
+                    // remains the steering source during the turn; this only
+                    // acts during the return-to-center zone.
+                    gyroAngle *= 0.35f;
 
-                    if (Math.abs(gyroAngle) < 0.35f)
+                    if (Math.abs(gyroAngle) < 0.8f)
                         gyroAngle = 0f;
                 }
             }
