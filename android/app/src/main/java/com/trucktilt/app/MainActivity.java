@@ -131,6 +131,14 @@ public class MainActivity extends Activity implements SensorEventListener {
         float wheelTouchStartAngle = 0f, wheelStartAngleDeg = 0f, wheelAngleDeg = 0f;
         float wheelLastAngle = 0f;
         boolean wheelDragging = false;
+
+        // Relative camera-trackpad state. Deltas are consumed by the 60 Hz
+        // network loop and sent separately from the HID controller packet.
+        final Object cameraSync = new Object();
+        float cameraDx = 0f, cameraDy = 0f;
+        boolean cameraDragging = false;
+        int cameraPointerId = -1;
+        float cameraLastX = 0f, cameraLastY = 0f;
         boolean wheelReturning = false;
         int wheelPointerId = -1;
         int mode = 2; // 0 gyro wheel, 1 gyro tilt, 2 virtual wheel
@@ -205,6 +213,13 @@ public class MainActivity extends Activity implements SensorEventListener {
                 drawMappedButton(c,i,x,y,buttonW,46);
             }
 
+            // Dedicated relative camera trackpad below the 32-button grid.
+            // It never overlaps the buttons, steering wheel, or pedals.
+            float cameraLeft=centerLeft, cameraRight=centerRight;
+            float cameraTop=top+rowGap*8f+8f, cameraBottom=h*.94f;
+            if(cameraBottom>cameraTop+60f)
+                drawCameraPad(c,cameraLeft,cameraTop,cameraRight,cameraBottom);
+
             // Right: progressive vertical throttle/brake sliders.
             // Clutch and retarder remain press-and-hold controls.
             float pw=Math.min(205,(pedalRight-pedalLeft-24)/2f);
@@ -244,6 +259,23 @@ public class MainActivity extends Activity implements SensorEventListener {
             c.drawRoundRect(cx+r*.32f,cy-r*.10f,cx+r*.92f,cy+r*.10f,10,10,p);
             p.setColor(Color.rgb(15,18,21)); c.drawCircle(cx,cy,r*.25f,p); c.restore();
             p.setColor(Color.rgb(139,195,74)); c.drawCircle(cx,cy,5,p);
+        }
+
+        void drawCameraPad(Canvas c,float left,float top,float right,float bottom) {
+            RectF r=new RectF(left,top,right,bottom);
+            controls.put("CAMERA_PAD",r);
+
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(Color.rgb(18,23,28));
+            c.drawRoundRect(r,16,16,p);
+
+            stroke.setStrokeWidth(2);
+            stroke.setColor(Color.rgb(58,68,76));
+            c.drawRoundRect(r,16,16,stroke);
+
+            text(c,"CAMERA TOUCHPAD",r.centerX(),r.centerY()-8,14,Color.WHITE,Paint.Align.CENTER);
+            text(c,"SWIPE TO LOOK",r.centerX(),r.centerY()+16,10,Color.LTGRAY,Paint.Align.CENTER);
+            text(c,"←  LOOK  →",r.centerX(),r.bottom-18,10,Color.rgb(139,195,74),Paint.Align.CENTER);
         }
 
         void drawMappedButton(Canvas c,int index,float cx,float cy,float bw,float bh) {
@@ -325,6 +357,13 @@ public class MainActivity extends Activity implements SensorEventListener {
                     return true;
                 }
 
+                if(hit("CAMERA_PAD",x,y) && cameraPointerId==-1) {
+                    cameraPointerId=pointerId;
+                    cameraDragging=true;
+                    cameraLastX=x; cameraLastY=y;
+                    return true;
+                }
+
                 String pedal=pedalAt(x,y);
                 if(pedal!=null && activePedalPointer==-1){
                     activePedalPointer=pointerId;
@@ -372,6 +411,19 @@ public class MainActivity extends Activity implements SensorEventListener {
                 return true;
             }
 
+            if(action==MotionEvent.ACTION_MOVE && cameraDragging && cameraPointerId>=0) {
+                int idx=e.findPointerIndex(cameraPointerId);
+                if(idx>=0) {
+                    float nx=e.getX(idx), ny=e.getY(idx);
+                    synchronized(cameraSync) {
+                        cameraDx += nx-cameraLastX;
+                        cameraDy += ny-cameraLastY;
+                    }
+                    cameraLastX=nx; cameraLastY=ny;
+                }
+                return true;
+            }
+
             if(action==MotionEvent.ACTION_UP || action==MotionEvent.ACTION_POINTER_UP || action==MotionEvent.ACTION_CANCEL) {
                 String pc=pointerControls.remove(pointerId);
                 if(pc!=null && pc.startsWith("B")) {
@@ -382,6 +434,10 @@ public class MainActivity extends Activity implements SensorEventListener {
                     wheelDragging=false;
                     // Virtual wheel is spring-loaded: release smoothly returns steering to center.
                     startWheelReturn();
+                }
+                if(pointerId==cameraPointerId){
+                    cameraPointerId=-1;
+                    cameraDragging=false;
                 }
                 if(pointerId==activePedalPointer){ activePedalPointer=-1; setPedal(activePedal,0f); activePedal=null; }
                 invalidate(); return true;
@@ -432,6 +488,14 @@ public class MainActivity extends Activity implements SensorEventListener {
             if(r==null) return 0f;
             // Top = 100%, bottom = 0%.
             return clamp((r.bottom-y)/r.height(),0f,1f);
+        }
+
+        float[] consumeCameraDelta(){
+            synchronized(cameraSync){
+                float[] d=new float[]{cameraDx,cameraDy};
+                cameraDx=0f; cameraDy=0f;
+                return d;
+            }
         }
 
         void setPedal(String s,float v){
@@ -514,6 +578,14 @@ public class MainActivity extends Activity implements SensorEventListener {
             for(boolean b:v.buttons)m.append('|').append(b?1:0);
             try{
                 sendRaw(m.toString(),host,hostPort); txCount++; rateWindowPackets++; lastSendError=null;
+
+                float[] cam=v.consumeCameraDelta();
+                if(Math.abs(cam[0]) > 0.01f || Math.abs(cam[1]) > 0.01f){
+                    // Android Y grows downward; Windows mouse Y has the same
+                    // screen convention, so no inversion is needed here.
+                    String cm=String.format(Locale.US,"CAMERA|%.2f|%.2f",cam[0],cam[1]);
+                    sendRaw(cm,host,hostPort);
+                }
             }catch(Exception ex){ lastSendError=ex.getClass().getSimpleName(); }
             long now=System.currentTimeMillis();
             if(now-rateWindowStart>=1000){rate=(int)rateWindowPackets;rateWindowPackets=0;rateWindowStart=now;}
