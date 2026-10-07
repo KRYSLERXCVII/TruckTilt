@@ -188,9 +188,9 @@ public class MainActivity extends Activity implements SensorEventListener {
             wheelRect.set(wheelCx-radius,wheelCy-radius,wheelCx+radius,wheelCy+radius);
             drawWheel(c,wheelCx,wheelCy,radius);
 
-            button("MODE",wheelCx-72,76,125,38,false);
-            button(rangeDeg+"°",wheelCx+72,76,125,38,false);
-            button("CALIBRATE",wheelCx,wheelCy+radius+28,150,36,false);
+            button(c,"MODE",wheelCx-72,76,125,38,false);
+            button(c,rangeDeg+"°",wheelCx+72,76,125,38,false);
+            button(c,"CALIBRATE",wheelCx,wheelCy+radius+28,150,42,false);
 
             // Center: 32 large, evenly spaced controls (4 columns x 8 rows).
             float colW=(centerRight-centerLeft)/4f;
