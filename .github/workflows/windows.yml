@@ -11,14 +11,34 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET 8
+      - name: Setup .NET 10
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: "8.0.x"
+          dotnet-version: "10.0.x"
+
+      - name: Download HIDMaestro SDK
+        shell: pwsh
+        run: |
+          $url = "https://github.com/hifihedgehog/HIDMaestro/releases/download/v1.11.0/HIDMaestro-v1.11.0.zip"
+          $zip = "$env:RUNNER_TEMP\HIDMaestro.zip"
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          $dest = "$env:RUNNER_TEMP\HIDMaestro"
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+
+          $dll = Get-ChildItem -Path $dest -Recurse -Filter "HIDMaestro.Core.dll" |
+                 Select-Object -First 1
+
+          if (-not $dll) {
+            throw "HIDMaestro.Core.dll was not found in the release archive."
+          }
+
+          Copy-Item $dll.FullName "windows/TruckTilt.Host/third_party/HIDMaestro.Core.dll"
+          Write-Host "Using $($dll.FullName)"
 
       - name: Restore
         run: dotnet restore windows/TruckTilt.Host/TruckTilt.Host.csproj
@@ -39,7 +59,29 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item publish/TruckTilt.Host.exe dist/TruckTilt.Host.exe
-          "Extract the ZIP and double-click TruckTilt.Host.exe.`nUDP port: 45454" | Set-Content dist/README.txt
+          @"
+          TruckTilt Windows Host v0.5
+
+          IMPORTANT:
+          Run TruckTilt.Host.exe as Administrator on first launch.
+          Windows will ask for permission to install the virtual controller driver.
+
+          After the virtual controller is ready:
+          1. Start TruckTilt.Host.exe.
+          2. Start TruckTilt on Android.
+          3. Open ETS2 / ATS.
+          4. Go to controller/input settings.
+          5. Bind the Xbox 360-style TruckTilt controller.
+
+          Mapping:
+          Left Stick X = steering
+          LT = brake
+          RT = throttle
+          A/B/X/Y/LB/RB/etc. = truck controls
+
+          UDP port: 45454
+          "@ | Set-Content dist/README.txt
+
           Compress-Archive -Path dist/* -DestinationPath TruckTilt-Windows-x64.zip -Force
 
       - name: Upload EXE
