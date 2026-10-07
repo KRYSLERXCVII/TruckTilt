@@ -670,6 +670,14 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
 
         RectF customRect(String key,RectF def) {
+            // While editing, keep the live in-memory rectangle. The old version
+            // reloaded the last saved Preferences value on every redraw, so the
+            // control jumped back between touch events and felt like snapping.
+            if(customizing && key.equals(editKey)) {
+                RectF live=controls.get(key);
+                if(live!=null) return new RectF(live);
+            }
+
             if(!layoutPrefs.contains(key+"_cx")) return def;
             float cx=layoutPrefs.getFloat(key+"_cx",def.centerX()/Math.max(1,getWidth()))*getWidth();
             float cy=layoutPrefs.getFloat(key+"_cy",def.centerY()/Math.max(1,getHeight()))*getHeight();
