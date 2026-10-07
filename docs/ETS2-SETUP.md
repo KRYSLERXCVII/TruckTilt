@@ -28,9 +28,11 @@ Select the TruckTilt wheel in the controller/input section.
 
 Bind:
 
-- Steering → Steering axis
-- Acceleration → Throttle
-- Brake → Brake
+- Steering → Wheel axis
+- Acceleration → Z axis
+- Brake → Rz axis
+- Clutch → Slider axis
+- Retarder → Dial axis
 - Clutch → Clutch
 - Retarder → Retarder axis or the dedicated retarder buttons
 - Truck controls → their numbered TruckTilt buttons

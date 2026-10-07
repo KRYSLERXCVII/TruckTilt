@@ -24,9 +24,11 @@ The virtual device is a custom HID joystick/racing-wheel style device rather tha
 
 Descriptor inputs:
 
-- Simulation Controls Steering
-- Simulation Controls Throttle
-- Simulation Controls Brake
+- Generic Desktop Wheel (steering)
+- Generic Desktop Z (throttle)
+- Generic Desktop Rz (brake)
+- Generic Desktop Slider (clutch)
+- Generic Desktop Dial (retarder)
 - Simulation Controls Clutch
 - Generic Desktop Slider for retarder/auxiliary axis
 - 32 buttons

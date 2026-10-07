@@ -27,13 +27,26 @@ public sealed class VirtualWheel : IDisposable
         _context.LoadDefaultProfiles();
         _context.InstallDriver();
 
+        // Use the classic Generic Desktop HID usages used by DirectInput
+        // racing wheels. Windows joy.cpl and older games reliably expose
+        // these as the standard Wheel/Z/Rz/Slider/Dial axes.
+        //
+        // Wheel  = steering (centered)
+        // Z      = throttle (0..100%)
+        // Rz     = brake (0..100%)
+        // Slider = clutch (0..100%)
+        // Dial   = retarder (0..100%)
+        //
+        // Do NOT use the Simulation Controls Steering/Throttle/Brake usages
+        // here: although valid HID usages, they are not consistently surfaced
+        // by the Windows DirectInput joystick panel.
         var descriptor = new HidDescriptorBuilder()
             .Joystick()
-            .AddAxis(HMAxis.Steering, bits: 16, logicalMin: -32768, logicalMax: 32767)
-            .AddAxis(HMAxis.Throttle, bits: 16)
-            .AddAxis(HMAxis.Brake, bits: 16)
-            .AddAxis(HMAxis.Clutch, bits: 16)
-            .AddAxis(HMAxis.Slider, bits: 16) // Retarder / auxiliary sim axis
+            .AddAxis(HMAxis.Wheel, bits: 16, logicalMin: -32768, logicalMax: 32767)
+            .AddAxis(HMAxis.Z, bits: 16)
+            .AddAxis(HMAxis.Rz, bits: 16)
+            .AddAxis(HMAxis.Slider, bits: 16)
+            .AddAxis(HMAxis.Dial, bits: 16)
             .AddButtons(ButtonCount)
             .AddHat(positions: 8)
             .AddPidFfbBlock();
@@ -59,14 +72,14 @@ public sealed class VirtualWheel : IDisposable
         _controller = _context.CreateController(_profile, "TruckTilt-VirtualWheel");
 
         // Prepare the exact descriptor-declared axes once. Values are normalized
-        // [0..1]; the steering field itself is signed [-32768..32767].
+        // [0..1]; the Wheel field itself is signed [-32768..32767].
         _axes = new Dictionary<HMAxis, float>
         {
-            [HMAxis.Steering] = 0.5f,
-            [HMAxis.Throttle] = 0f,
-            [HMAxis.Brake] = 0f,
-            [HMAxis.Clutch] = 0f,
+            [HMAxis.Wheel] = 0.5f,
+            [HMAxis.Z] = 0f,
+            [HMAxis.Rz] = 0f,
             [HMAxis.Slider] = 0f,
+            [HMAxis.Dial] = 0f,
         };
 
         // Publish the PID pool so DirectInput can treat the device as an
@@ -110,11 +123,11 @@ public sealed class VirtualWheel : IDisposable
         clutch = Math.Clamp(clutch, 0.0, 1.0);
         retarder = Math.Clamp(retarder, 0.0, 1.0);
 
-        _axes[HMAxis.Steering] = (float)((steering + 1.0) * 0.5);
-        _axes[HMAxis.Throttle] = (float)throttle;
-        _axes[HMAxis.Brake] = (float)brake;
-        _axes[HMAxis.Clutch] = (float)clutch;
-        _axes[HMAxis.Slider] = (float)retarder;
+        _axes[HMAxis.Wheel] = (float)((steering + 1.0) * 0.5);
+        _axes[HMAxis.Z] = (float)throttle;
+        _axes[HMAxis.Rz] = (float)brake;
+        _axes[HMAxis.Slider] = (float)clutch;
+        _axes[HMAxis.Dial] = (float)retarder;
 
         var state = new HMGamepadState
         {
