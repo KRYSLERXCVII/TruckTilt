@@ -454,6 +454,17 @@ public class MainActivity extends Activity implements SensorEventListener {
                 return true;
             }
 
+            // Multi-touch: update the pedal first. Previously the wheel's MOVE
+            // handler returned immediately, which prevented a second finger from
+            // continuously moving throttle/brake while steering.
+            if(action==MotionEvent.ACTION_MOVE && activePedalPointer>=0) {
+                int idx=e.findPointerIndex(activePedalPointer);
+                if(idx>=0 && ("THROTTLE".equals(activePedal) || "BRAKE".equals(activePedal))) {
+                    setPedal(activePedal,pedalValueAt(activePedal,e.getY(idx)));
+                    invalidate();
+                }
+            }
+
             if(action==MotionEvent.ACTION_MOVE && wheelDragging && wheelPointerId>=0) {
                 int idx=e.findPointerIndex(wheelPointerId);
                 if(idx>=0) {
@@ -472,15 +483,10 @@ public class MainActivity extends Activity implements SensorEventListener {
                     steer=clamp(wheelAngleDeg/maxAngle,-1f,1f);
                     invalidate();
                 }
-                return true;
             }
 
-            if(action==MotionEvent.ACTION_MOVE && activePedalPointer>=0) {
-                int idx=e.findPointerIndex(activePedalPointer);
-                if(idx>=0 && ("THROTTLE".equals(activePedal) || "BRAKE".equals(activePedal))) {
-                    setPedal(activePedal,pedalValueAt(activePedal,e.getY(idx)));
-                    invalidate();
-                }
+            if(action==MotionEvent.ACTION_MOVE &&
+               (wheelDragging || activePedalPointer>=0)) {
                 return true;
             }
 
