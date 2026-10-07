@@ -93,7 +93,7 @@ public class MainActivity extends Activity implements SensorEventListener {
             float dt = (e.timestamp - lastGyroNs) / 1_000_000_000f;
             lastGyroNs = e.timestamp;
             if (dt > 0 && dt < .2f) {
-                gyroAngle -= Math.toDegrees(e.values[2] - gyroBias) * dt;
+                gyroAngle += Math.toDegrees(e.values[2] - gyroBias) * dt;
                 float half = view == null ? 450f : view.rangeDeg / 2f;
                 gyroAngle = clamp(gyroAngle, -half, half);
             }
@@ -318,7 +318,13 @@ public class MainActivity extends Activity implements SensorEventListener {
                 if(pc!=null && pc.startsWith("B")) {
                     int i=Integer.parseInt(pc.substring(1)); buttons[i]=false;
                 }
-                if(pointerId==wheelPointerId){ wheelPointerId=-1; wheelDragging=false; }
+                if(pointerId==wheelPointerId){
+                    wheelPointerId=-1;
+                    wheelDragging=false;
+                    // Virtual wheel is spring-loaded: release returns steering to center.
+                    wheelAngleDeg=0f;
+                    steer=0f;
+                }
                 if(pointerId==activePedalPointer){ activePedalPointer=-1; setPedal(activePedal,0f); activePedal=null; }
                 invalidate(); return true;
             }
