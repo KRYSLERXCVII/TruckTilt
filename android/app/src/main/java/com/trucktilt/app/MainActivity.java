@@ -130,6 +130,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         float steer = 0f, throttle = 0f, brake = 0f, clutch = 0f, retarder = 0f;
         float wheelTouchStartAngle = 0f, wheelStartAngleDeg = 0f, wheelAngleDeg = 0f;
         boolean wheelDragging = false;
+        boolean wheelReturning = false;
         int wheelPointerId = -1;
         int mode = 2; // 0 gyro wheel, 1 gyro tilt, 2 virtual wheel
         int rangeDeg = 900;
@@ -203,15 +204,16 @@ public class MainActivity extends Activity implements SensorEventListener {
                 drawMappedButton(c,i,x,y,buttonW,46);
             }
 
-            // Right: large pedal controls. Each is an independent analog input.
+            // Right: progressive vertical throttle/brake sliders.
+            // Clutch and retarder remain press-and-hold controls.
             float pw=Math.min(205,(pedalRight-pedalLeft-24)/2f);
             float px1=pedalLeft+(pedalRight-pedalLeft)*.27f;
             float px2=pedalLeft+(pedalRight-pedalLeft)*.73f;
-            float py1=h*.42f, py2=h*.62f;
-            drawPedal(c,"THROTTLE",px1,py1,pw,105,throttle);
-            drawPedal(c,"BRAKE",px2,py1,pw,105,brake);
-            drawPedal(c,"CLUTCH",px1,py2,pw,105,clutch);
-            drawPedal(c,"RETARDER",px2,py2,pw,105,retarder);
+            float py1=h*.43f, py2=h*.72f;
+            drawProgressivePedal(c,"THROTTLE",px1,py1,pw,250,throttle);
+            drawProgressivePedal(c,"BRAKE",px2,py1,pw,250,brake);
+            drawPedal(c,"CLUTCH",px1,py2,pw,92,clutch);
+            drawPedal(c,"RETARDER",px2,py2,pw,92,retarder);
 
             text(c,"PEDALS",(pedalLeft+pedalRight)/2f,92,14,Color.LTGRAY,Paint.Align.CENTER);
             String modeText=mode==0?"GYRO WHEEL":mode==1?"GYRO TILT":"VIRTUAL WHEEL";
@@ -262,6 +264,35 @@ public class MainActivity extends Activity implements SensorEventListener {
             text(c,label,cx,cy+4,10,active?Color.rgb(7,9,11):Color.WHITE,Paint.Align.CENTER);
         }
 
+        void drawProgressivePedal(Canvas c,String label,float cx,float cy,float bw,float bh,float value) {
+            RectF r=new RectF(cx-bw/2,cy-bh/2,cx+bw/2,cy+bh/2);
+            controls.put("P_"+label,r);
+
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(Color.rgb(24,29,34));
+            c.drawRoundRect(r,12,12,p);
+
+            float v=clamp(value,0f,1f);
+            if(v>0.001f){
+                p.setColor(Color.rgb(139,195,74));
+                float fillTop=r.bottom-(r.height()*v);
+                c.drawRoundRect(new RectF(r.left,r.top,r.right,r.bottom),12,12,p);
+                // Cut the fill back to the actual progress area using the background color.
+                p.setColor(Color.rgb(24,29,34));
+                c.drawRoundRect(new RectF(r.left,r.top,r.right,fillTop),12,12,p);
+                p.setColor(Color.rgb(139,195,74));
+                c.drawRect(r.left,fillTop,r.right,r.bottom,p);
+            }
+
+            // Progress marker.
+            float markerY=r.bottom-(r.height()*v);
+            p.setColor(Color.WHITE);
+            c.drawRoundRect(new RectF(r.left+10,markerY-3,r.right-10,markerY+3),3,3,p);
+
+            text(c,label,cx,cy+4,10,Color.WHITE,Paint.Align.CENTER);
+            text(c,String.format(Locale.US,"%d%%",(int)(v*100f)),cx,cy+22,9,Color.LTGRAY,Paint.Align.CENTER);
+        }
+
         void drawPedal(Canvas c,String label,float cx,float cy,float bw,float bh,float value) {
             RectF r=new RectF(cx-bw/2,cy-bh/2,cx+bw/2,cy+bh/2);
             controls.put("P_"+label,r);
@@ -285,6 +316,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                 if(hit("CALIBRATE",x,y)){ calibrate(); return true; }
 
                 if(wheelRect.contains(x,y) && wheelPointerId==-1) {
+                    wheelReturning=false;
                     wheelPointerId=pointerId; wheelDragging=true;
                     wheelTouchStartAngle=angleFromCenter(x,y); wheelStartAngleDeg=wheelAngleDeg;
                     return true;
@@ -292,7 +324,12 @@ public class MainActivity extends Activity implements SensorEventListener {
 
                 String pedal=pedalAt(x,y);
                 if(pedal!=null && activePedalPointer==-1){
-                    activePedalPointer=pointerId; activePedal=pedal; setPedal(pedal,1f);
+                    activePedalPointer=pointerId;
+                    activePedal=pedal;
+                    if("THROTTLE".equals(pedal) || "BRAKE".equals(pedal))
+                        setPedal(pedal,pedalValueAt(pedal,y));
+                    else
+                        setPedal(pedal,1f);
                     invalidate(); return true;
                 }
 
@@ -313,6 +350,15 @@ public class MainActivity extends Activity implements SensorEventListener {
                 return true;
             }
 
+            if(action==MotionEvent.ACTION_MOVE && activePedalPointer>=0) {
+                int idx=e.findPointerIndex(activePedalPointer);
+                if(idx>=0 && ("THROTTLE".equals(activePedal) || "BRAKE".equals(activePedal))) {
+                    setPedal(activePedal,pedalValueAt(activePedal,e.getY(idx)));
+                    invalidate();
+                }
+                return true;
+            }
+
             if(action==MotionEvent.ACTION_UP || action==MotionEvent.ACTION_POINTER_UP || action==MotionEvent.ACTION_CANCEL) {
                 String pc=pointerControls.remove(pointerId);
                 if(pc!=null && pc.startsWith("B")) {
@@ -321,9 +367,8 @@ public class MainActivity extends Activity implements SensorEventListener {
                 if(pointerId==wheelPointerId){
                     wheelPointerId=-1;
                     wheelDragging=false;
-                    // Virtual wheel is spring-loaded: release returns steering to center.
-                    wheelAngleDeg=0f;
-                    steer=0f;
+                    // Virtual wheel is spring-loaded: release smoothly returns steering to center.
+                    startWheelReturn();
                 }
                 if(pointerId==activePedalPointer){ activePedalPointer=-1; setPedal(activePedal,0f); activePedal=null; }
                 invalidate(); return true;
@@ -331,11 +376,51 @@ public class MainActivity extends Activity implements SensorEventListener {
             return true;
         }
 
+        void startWheelReturn(){
+            if(Math.abs(wheelAngleDeg) < 0.5f){
+                wheelAngleDeg=0f;
+                steer=0f;
+                wheelReturning=false;
+                invalidate();
+                return;
+            }
+
+            wheelReturning=true;
+
+            postOnAnimation(new Runnable(){
+                @Override public void run(){
+                    if(!wheelReturning || wheelDragging) return;
+
+                    // Exponential spring-back: fast initially, gentle near center.
+                    wheelAngleDeg *= 0.78f;
+
+                    if(Math.abs(wheelAngleDeg) < 0.5f){
+                        wheelAngleDeg=0f;
+                        steer=0f;
+                        wheelReturning=false;
+                        invalidate();
+                        return;
+                    }
+
+                    steer=clamp(wheelAngleDeg/(rangeDeg/2f),-1f,1f);
+                    invalidate();
+                    postOnAnimation(this);
+                }
+            });
+        }
+
         boolean hit(String key,float x,float y){ RectF r=controls.get(key); return r!=null&&r.contains(x,y); }
         String pedalAt(float x,float y){
             for(String s:new String[]{"CLUTCH","BRAKE","THROTTLE","RETARDER"}) if(hit("P_"+s,x,y)) return s;
             return null;
         }
+        float pedalValueAt(String s,float y){
+            RectF r=controls.get("P_"+s);
+            if(r==null) return 0f;
+            // Top = 100%, bottom = 0%.
+            return clamp((r.bottom-y)/r.height(),0f,1f);
+        }
+
         void setPedal(String s,float v){
             if("CLUTCH".equals(s)) clutch=v;
             else if("BRAKE".equals(s)) brake=v;
