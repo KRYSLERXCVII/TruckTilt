@@ -3,7 +3,7 @@ name: Windows Host
 on:
   workflow_dispatch:
   push:
-    branches: ["main"]
+    branches: [ "main" ]
     paths:
       - "windows/**"
       - ".github/workflows/windows.yml"
@@ -37,11 +37,14 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item publish/TruckTilt.Host.exe dist/TruckTilt.Host.exe
-
           @"
           TruckTilt Windows Host
 
-          Extract this ZIP and double-click TruckTilt.Host.exe.
+          1. Extract this ZIP.
+          2. Double-click TruckTilt.Host.exe.
+          3. Keep the host running while using the TruckTilt Android app.
+          4. Phone and PC must be connected to the same Wi-Fi network,
+             or the phone may connect through the Windows Mobile Hotspot.
 
           UDP port: 45454
           "@ | Set-Content dist/README.txt
