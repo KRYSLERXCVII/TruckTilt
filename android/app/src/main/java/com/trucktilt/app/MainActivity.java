@@ -3,6 +3,8 @@ package com.trucktilt.app;
 import android.app.Activity;
 import android.os.Bundle;
 import android.content.Context;
+import android.content.Intent;
+import android.net.Uri;
 import android.content.pm.ActivityInfo;
 import android.graphics.*;
 import android.hardware.*;
@@ -14,7 +16,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * TruckTilt v0.7.4
+ * TruckTilt v0.9 — branded Android controller build.
  * Android side of the Wi-Fi steering-wheel controller.
  *
  * The phone sends a normalized wheel/pedal state plus 32 independent buttons.
@@ -23,6 +25,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class MainActivity extends Activity implements SensorEventListener {
     static final int PORT = 45454;
     static final int INPUT_INTERVAL_MS = 16;
+    // Change this to your exact Buy Me a Coffee page if your username differs.
+    static final String DONATE_URL = "https://buymeacoffee.com/kryslerxcvii";
 
     ControllerView view;
     SensorManager sensors;
@@ -108,6 +112,14 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     @Override public void onAccuracyChanged(Sensor s, int a) {}
+
+    void openDonate() {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(DONATE_URL)));
+        } catch (Exception ignored) {
+            // No browser available; keep the controller running normally.
+        }
+    }
 
     void calibrate() {
         gyroAngle = 0f;
@@ -199,10 +211,13 @@ public class MainActivity extends Activity implements SensorEventListener {
             p.setStyle(Paint.Style.FILL); p.setColor(Color.rgb(18,22,26));
             c.drawRect(0,0,w,58,p);
             text(c,"TRUCKTILT",20,37,20,Color.WHITE,Paint.Align.LEFT);
+            text(c,"by KRYSLERXCVII - v0.9",112,37,18,Color.rgb(244,70,70),Paint.Align.LEFT);
+            // Small non-intrusive support button lives in the header.
+            button(c,"DONATE",w-76,29,112,34,false);
             text(c,net.connected ? "● CONNECTED" : "● SEARCHING",
-                    w-390,34,13,net.connected?Color.rgb(139,195,74):Color.rgb(255,180,50),Paint.Align.LEFT);
+                    w-230,25,12,net.connected?Color.rgb(139,195,74):Color.rgb(255,180,50),Paint.Align.RIGHT);
             String status=net.connected ? net.rttMs+" ms  •  "+net.rate+" Hz  •  TX "+net.txCount : "Wi-Fi only • auto discovery";
-            text(c,status,w-18,34,13,Color.LTGRAY,Paint.Align.RIGHT);
+            text(c,status,w-145,44,11,Color.LTGRAY,Paint.Align.RIGHT);
 
             // Truck cockpit layout:
             // LEFT   = steering + frequently used steering-wheel controls
@@ -495,6 +510,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                     return true;
                 }
 
+                if(hit("DONATE",x,y)){ openDonate(); return true; }
                 if(hit("MODE",x,y)){ mode=(mode+1)%3; invalidate(); return true; }
                 if(hit(rangeDeg+"°",x,y)){ cycleRange(); invalidate(); return true; }
                 if(hit("CALIBRATE",x,y)){ calibrate(); return true; }
