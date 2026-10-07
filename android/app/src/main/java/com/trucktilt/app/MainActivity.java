@@ -239,7 +239,9 @@ public class MainActivity extends Activity implements SensorEventListener {
             float buttonW=Math.min(170f, colW-8f);
             float centerButtonH = controlH;
             float top=86f;
-            float rowGap=Math.min(54f,(h*.48f-top)/7f);
+            // Add breathing room between button rows so adjacent controls are
+            // easier to distinguish and tap.
+            float rowGap=Math.min(62f,(h*.48f-top)/7f);
 
             // Row 1 — lighting
             int[] lighting={3,2,4,24};
@@ -304,11 +306,11 @@ public class MainActivity extends Activity implements SensorEventListener {
             drawProgressivePedal(c,"BRAKE",px2,py1,pw,270,brake);
 
             // Gear and engine controls are deliberately close to the pedals.
-            drawMappedButton(c,18,px1,h*.60f,pw*.88f,controlH); // GEAR UP
-            drawMappedButton(c,10,px2,h*.60f,pw*.88f,controlH); // ENGINE BRAKE (swapped into Gear Down position)
-            drawMappedButton(c,19,px1,h*.67f,pw*.88f,controlH); // GEAR DOWN (swapped into Engine Brake position)
-            drawMappedButton(c,11,px2,h*.67f,pw*.88f,controlH); // RETARDER+
-            drawMappedButton(c,12,px2,h*.74f,pw*.88f,controlH); // RETARDER-
+            drawMappedButton(c,18,px1,h*.59f,pw*.88f,controlH); // GEAR UP
+            drawMappedButton(c,10,px2,h*.59f,pw*.88f,controlH); // ENGINE BRAKE (swapped into Gear Down position)
+            drawMappedButton(c,19,px1,h*.68f,pw*.88f,controlH); // GEAR DOWN (swapped into Engine Brake position)
+            drawMappedButton(c,11,px2,h*.68f,pw*.88f,controlH); // RETARDER+
+            drawMappedButton(c,12,px2,h*.77f,pw*.88f,controlH); // RETARDER-
 
             drawPedal(c,"CLUTCH",px1,h*.84f,pw*.88f,62,clutch);
             drawPedal(c,"RETARDER",px2,h*.84f,pw*.88f,62,retarder);
