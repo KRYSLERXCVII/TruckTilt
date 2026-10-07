@@ -174,17 +174,24 @@ public class MainActivity extends Activity implements SensorEventListener {
                 lastReferenceCheckZ = currentZ;
 
                 // Only correct after the phone has remained physically stable
-                // near the ORIGINAL calibrated center for 450 ms.
+                // near the ORIGINAL calibrated center for 450 ms AND the
+                // accumulated gyro movement is substantial (>15 degrees).
                 //
                 // This means:
+                // - 3-5 degree curves are never reset
+                // - small steering corrections are never reset
                 // - slow turns are not reset
                 // - crossing through center while turning is not reset
-                // - sharp turns are not reset
-                // - genuinely returning to center and stopping is corrected fast
+                // - substantial turns can still have accumulated drift removed
+                //   when the phone genuinely returns to the calibrated center
                 if (referenceStableSinceMs != 0L &&
                     nowMs - referenceStableSinceMs > 450L &&
-                    Math.abs(fromReference) < 8f) {
+                    Math.abs(fromReference) < 8f &&
+                    Math.abs(gyroAngle) > 15f) {
 
+                    // Only correct accumulated drift after a substantial
+                    // steering movement. Small 3-15 degree curves are NEVER
+                    // reset, so normal fine steering remains fully responsive.
                     gyroAngle *= 0.35f;
 
                     if (Math.abs(gyroAngle) < 0.8f)
