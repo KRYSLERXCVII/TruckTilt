@@ -129,6 +129,7 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         float steer = 0f, throttle = 0f, brake = 0f, clutch = 0f, retarder = 0f;
         float wheelTouchStartAngle = 0f, wheelStartAngleDeg = 0f, wheelAngleDeg = 0f;
+        float wheelLastAngle = 0f;
         boolean wheelDragging = false;
         boolean wheelReturning = false;
         int wheelPointerId = -1;
@@ -318,7 +319,9 @@ public class MainActivity extends Activity implements SensorEventListener {
                 if(wheelRect.contains(x,y) && wheelPointerId==-1) {
                     wheelReturning=false;
                     wheelPointerId=pointerId; wheelDragging=true;
-                    wheelTouchStartAngle=angleFromCenter(x,y); wheelStartAngleDeg=wheelAngleDeg;
+                    wheelTouchStartAngle=angleFromCenter(x,y);
+                    wheelLastAngle=wheelTouchStartAngle;
+                    wheelStartAngleDeg=wheelAngleDeg;
                     return true;
                 }
 
@@ -343,9 +346,19 @@ public class MainActivity extends Activity implements SensorEventListener {
                 int idx=e.findPointerIndex(wheelPointerId);
                 if(idx>=0) {
                     float a=angleFromCenter(e.getX(idx),e.getY(idx));
-                    float delta=normalizeDelta(a-wheelTouchStartAngle);
-                    wheelAngleDeg=clamp(wheelStartAngleDeg + delta*(rangeDeg/360f),-rangeDeg/2f,rangeDeg/2f);
-                    steer=wheelAngleDeg/(rangeDeg/2f); invalidate();
+                    float delta=normalizeDelta(a-wheelLastAngle);
+                    wheelLastAngle=a;
+
+                    // Hard steering stops. Continuous angle accumulation prevents
+                    // atan2() wraparound from suddenly reversing steering.
+                    float maxAngle=rangeDeg/2f;
+                    wheelAngleDeg=clamp(
+                            wheelAngleDeg + delta*(rangeDeg/360f),
+                            -maxAngle,
+                            maxAngle
+                    );
+                    steer=clamp(wheelAngleDeg/maxAngle,-1f,1f);
+                    invalidate();
                 }
                 return true;
             }
