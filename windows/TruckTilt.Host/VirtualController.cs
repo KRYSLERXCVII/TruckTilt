@@ -1,117 +1,312 @@
+using System;
 using HIDMaestro;
 
 namespace TruckTilt.Host;
 
 public sealed class VirtualController : IDisposable
 {
-    private readonly HMContext _context;
-    private readonly HMProfile _profile;
-    private readonly HMController _controller;
-    private readonly object _sync = new();
+    private HMContext? _context;
+    private HMController? _controller;
+    private HMProfile? _profile;
 
-    public bool Ready { get; private set; }
+    private bool _initialized;
+    private bool _disposed;
 
-    public VirtualController()
+    public bool IsReady => _initialized && _controller != null;
+
+    public void Initialize()
     {
-        _context = new HMContext();
-        _context.LoadDefaultProfiles();
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(VirtualController));
 
-        _profile = _context.GetProfile("xbox-360-wired")
-            ?? throw new InvalidOperationException(
-                "HIDMaestro Xbox 360 Wired profile is not available.");
+        if (_initialized)
+            return;
 
-        // Driver installation is idempotent; first launch requires elevation.
-        _context.InstallDriver();
+        Console.WriteLine("Initializing HIDMaestro virtual controller...");
 
-        _controller = _context.CreateController(
-            _profile,
-            "TruckTilt-Xbox360");
+        try
+        {
+            // Create HIDMaestro context.
+            _context = new HMContext();
 
-        Ready = true;
-        Submit(0, 0, 0, InputButtons.None);
+            // Load the built-in controller profiles.
+            _context.LoadDefaultProfiles();
+
+            // Use the Xbox 360 wired profile because ETS2 / ATS
+            // can use it through XInput / DirectInput.
+            _profile = _context.GetProfile("xbox-360-wired");
+
+            if (_profile == null)
+            {
+                throw new InvalidOperationException(
+                    "HIDMaestro Xbox 360 profile was not found."
+                );
+            }
+
+            Console.WriteLine(
+                $"HIDMaestro profile: {_profile.Name}"
+            );
+
+            // Install the HIDMaestro driver if required.
+            // This requires the host application to run as Administrator.
+            Console.WriteLine("Installing/checking HIDMaestro driver...");
+
+            _context.InstallDriver();
+
+            Console.WriteLine("HIDMaestro driver ready.");
+
+            // Create the actual Windows virtual controller.
+            _controller = _context.CreateController(
+                _profile,
+                "TruckTilt-Xbox360"
+            );
+
+            if (_controller == null)
+            {
+                throw new InvalidOperationException(
+                    "Failed to create TruckTilt virtual controller."
+                );
+            }
+
+            _initialized = true;
+
+            Console.WriteLine("VIRTUAL CONTROLLER READY");
+            Console.WriteLine(
+                "ETS2 / ATS can now bind TruckTilt as a controller."
+            );
+        }
+        catch
+        {
+            _initialized = false;
+
+            try
+            {
+                _controller?.Dispose();
+            }
+            catch
+            {
+                // Ignore cleanup errors.
+            }
+
+            _controller = null;
+
+            try
+            {
+                _context?.Dispose();
+            }
+            catch
+            {
+                // Ignore cleanup errors.
+            }
+
+            _context = null;
+
+            throw;
+        }
     }
 
+    /// <summary>
+    /// Submit the current TruckTilt input to the virtual Xbox 360 controller.
+    ///
+    /// steering:
+    ///     -1 = full left
+    ///      0 = center
+    ///     +1 = full right
+    ///
+    /// throttle:
+    ///      0 = released
+    ///      1 = full throttle
+    ///
+    /// brake:
+    ///      0 = released
+    ///      1 = full brake
+    /// </summary>
     public void Submit(
-        double steering,
-        double throttle,
-        double brake,
+        float steering,
+        float throttle,
+        float brake,
         InputButtons buttons)
     {
-        if (!Ready) return;
+        if (_disposed)
+            return;
 
-        steering = Math.Clamp(steering, -1.0, 1.0);
-        throttle = Math.Clamp(throttle, 0.0, 1.0);
-        brake = Math.Clamp(brake, 0.0, 1.0);
+        if (!_initialized || _controller == null || _profile == null)
+            return;
 
-        // HIDMaestro normalizes centered analog axes to [0..1].
-        // X=0.0 is full left, 0.5 center, 1.0 full right.
+        // Clamp incoming values.
+        steering = Math.Clamp(steering, -1.0f, 1.0f);
+        throttle = Math.Clamp(throttle, 0.0f, 1.0f);
+        brake = Math.Clamp(brake, 0.0f, 1.0f);
+
+        // HIDMaestro uses 0..1 for analog values.
+        //
+        // Steering:
+        // -1 -> 0
+        //  0 -> 0.5
+        // +1 -> 1
+        float steeringAxis = (steering + 1.0f) * 0.5f;
+
+        // Build the standard Xbox-style analog axes.
         var axes = HMGamepadStateHelpers.StandardAxes(
             _profile,
-            leftStickX: (float)((steering + 1.0) * 0.5),
+
+            leftStickX: steeringAxis,
+
+            // Keep Y centered because TruckTilt does not use
+            // the left stick Y axis.
             leftStickY: 0.5f,
+
+            // Right stick unused.
             rightStickX: 0.5f,
             rightStickY: 0.5f,
-            leftTrigger: (float)brake,
-            rightTrigger: (float)throttle);
+
+            // Brake -> LT.
+            leftTrigger: brake,
+
+            // Throttle -> RT.
+            rightTrigger: throttle
+        );
+
+        // ---------------------------------------------------------
+        // Truck controls -> Xbox buttons
+        // ---------------------------------------------------------
+
+        HMButton hmButtons = 0;
+
+        // IMPORTANT:
+        // InputButtons members are STATIC definitions.
+        // Therefore they must be referenced through InputButtons,
+        // not through the 'buttons' instance.
+        //
+        // This fixes the CS0176 errors:
+        //
+        // buttons.Left       ❌
+        // InputButtons.Left  ✅
+        //
+        // The actual pressed-state is obtained from the input packet.
+
+        if (buttons.Has(InputButtons.Left))
+            hmButtons |= HMButton.A;
+
+        if (buttons.Has(InputButtons.Right))
+            hmButtons |= HMButton.B;
+
+        if (buttons.Has(InputButtons.Lights))
+            hmButtons |= HMButton.X;
+
+        if (buttons.Has(InputButtons.HighBeam))
+            hmButtons |= HMButton.Y;
+
+        if (buttons.Has(InputButtons.Hazard))
+            hmButtons |= HMButton.LeftBumper;
+
+        if (buttons.Has(InputButtons.Horn))
+            hmButtons |= HMButton.RightBumper;
+
+        if (buttons.Has(InputButtons.AirHorn))
+            hmButtons |= HMButton.Back;
+
+        if (buttons.Has(InputButtons.Wiper))
+            hmButtons |= HMButton.Start;
+
+        if (buttons.Has(InputButtons.EngineBrake))
+            hmButtons |= HMButton.LeftStick;
+
+        if (buttons.Has(InputButtons.Retarder))
+            hmButtons |= HMButton.RightStick;
+
+        if (buttons.Has(InputButtons.ParkingBrake))
+            hmButtons |= HMButton.Guide;
+
+        // Create the controller state.
+        var state = new HMGamepadState
+        {
+            Axes = axes,
+            Buttons = hmButtons
+        };
+
+        // Send state to Windows.
+        _controller.SubmitState(in state);
+    }
+
+    /// <summary>
+    /// Immediately release all analog inputs and buttons.
+    /// Used when the phone disconnects or times out.
+    /// </summary>
+    public void Neutral()
+    {
+        if (_disposed)
+            return;
+
+        if (!_initialized || _controller == null || _profile == null)
+            return;
+
+        var axes = HMGamepadStateHelpers.StandardAxes(
+            _profile,
+
+            // Steering center.
+            leftStickX: 0.5f,
+
+            // Left stick Y center.
+            leftStickY: 0.5f,
+
+            // Right stick center.
+            rightStickX: 0.5f,
+            rightStickY: 0.5f,
+
+            // Triggers released.
+            leftTrigger: 0.0f,
+            rightTrigger: 0.0f
+        );
 
         var state = new HMGamepadState
         {
             Axes = axes,
-            Buttons = ToButtons(buttons)
+            Buttons = 0
         };
 
-        lock (_sync)
-        {
-            _controller.SubmitState(in state);
-        }
-    }
-
-    private static HMButton ToButtons(InputButtons b)
-    {
-        HMButton result = HMButton.None;
-
-        if (b.Left) result |= HMButton.A;
-        if (b.Right) result |= HMButton.B;
-        if (b.Lights) result |= HMButton.X;
-        if (b.HighBeam) result |= HMButton.Y;
-        if (b.Hazard) result |= HMButton.LeftBumper;
-        if (b.Horn) result |= HMButton.RightBumper;
-        if (b.AirHorn) result |= HMButton.Back;
-        if (b.Wiper) result |= HMButton.Start;
-        if (b.EngineBrake) result |= HMButton.LeftStick;
-        if (b.Retarder) result |= HMButton.RightStick;
-        if (b.ParkingBrake) result |= HMButton.Guide;
-
-        return result;
+        _controller.SubmitState(in state);
     }
 
     public void Dispose()
     {
-        Ready = false;
+        if (_disposed)
+            return;
+
+        _disposed = true;
+
         try
         {
-            _controller.Dispose();
+            // Make sure the truck is left in a safe state.
+            Neutral();
         }
-        finally
+        catch
         {
-            _context.Dispose();
+            // Ignore neutral-state errors during shutdown.
         }
-    }
-}
 
-[Flags]
-public enum InputButtons
-{
-    None = 0,
-    Left = 1 << 0,
-    Right = 1 << 1,
-    Lights = 1 << 2,
-    HighBeam = 1 << 3,
-    Hazard = 1 << 4,
-    Horn = 1 << 5,
-    AirHorn = 1 << 6,
-    Wiper = 1 << 7,
-    EngineBrake = 1 << 8,
-    Retarder = 1 << 9,
-    ParkingBrake = 1 << 10,
+        try
+        {
+            _controller?.Dispose();
+        }
+        catch
+        {
+            // Ignore controller cleanup errors.
+        }
+
+        _controller = null;
+
+        try
+        {
+            _context?.Dispose();
+        }
+        catch
+        {
+            // Ignore context cleanup errors.
+        }
+
+        _context = null;
+        _profile = null;
+        _initialized = false;
+    }
 }
