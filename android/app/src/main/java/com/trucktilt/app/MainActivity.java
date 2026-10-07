@@ -93,7 +93,7 @@ public class MainActivity extends Activity implements SensorEventListener {
             float dt = (e.timestamp - lastGyroNs) / 1_000_000_000f;
             lastGyroNs = e.timestamp;
             if (dt > 0 && dt < .2f) {
-                gyroAngle += Math.toDegrees(e.values[2] - gyroBias) * dt;
+                gyroAngle -= Math.toDegrees(e.values[2] - gyroBias) * dt;
                 float half = view == null ? 450f : view.rangeDeg / 2f;
                 gyroAngle = clamp(gyroAngle, -half, half);
             }
