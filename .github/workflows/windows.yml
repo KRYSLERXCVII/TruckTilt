@@ -1,97 +1,246 @@
-name: Windows Host
+name: Build Windows
 
 on:
-  workflow_dispatch:
   push:
-    branches: ["main"]
-    paths:
-      - "windows/**"
-      - ".github/workflows/windows.yml"
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build-windows:
+    name: Build TruckTilt Windows Host
     runs-on: windows-latest
 
     steps:
-      - name: Checkout
+      # ---------------------------------------------------------
+      # Checkout
+      # ---------------------------------------------------------
+      - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ---------------------------------------------------------
+      # .NET 10
+      # ---------------------------------------------------------
       - name: Setup .NET 10
         uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: "10.0.x"
+          dotnet-version: '10.0.x'
 
+      # ---------------------------------------------------------
+      # Download HIDMaestro SDK
+      # ---------------------------------------------------------
       - name: Download HIDMaestro SDK
         shell: pwsh
         run: |
           $url = "https://github.com/hifihedgehog/HIDMaestro/releases/download/v1.11.0/HIDMaestro-v1.11.0.zip"
-          $zip = "$env:RUNNER_TEMP\HIDMaestro.zip"
-          Invoke-WebRequest -Uri $url -OutFile $zip
-          $dest = "$env:RUNNER_TEMP\HIDMaestro"
-          Expand-Archive -Path $zip -DestinationPath $dest -Force
 
-          $dll = Get-ChildItem -Path $dest -Recurse -Filter "HIDMaestro.Core.dll" |
-                 Select-Object -First 1
+          $zipPath = Join-Path $env:RUNNER_TEMP "HIDMaestro.zip"
+          $extractPath = Join-Path $env:RUNNER_TEMP "HIDMaestro"
 
-          if (-not $dll) {
-            throw "HIDMaestro.Core.dll was not found in the release archive."
+          Write-Host "Downloading HIDMaestro v1.11.0..."
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile $zipPath `
+            -UseBasicParsing
+
+          if (-not (Test-Path $zipPath)) {
+            Write-Error "HIDMaestro ZIP was not downloaded."
+            exit 1
           }
 
-          Copy-Item $dll.FullName "windows/TruckTilt.Host/third_party/HIDMaestro.Core.dll"
-          Write-Host "Using $($dll.FullName)"
+          Write-Host "Creating extraction directory..."
 
-      - name: Restore
-        run: dotnet restore windows/TruckTilt.Host/TruckTilt.Host.csproj
+          if (Test-Path $extractPath) {
+            Remove-Item `
+              $extractPath `
+              -Recurse `
+              -Force
+          }
 
-      - name: Publish self-contained single EXE
-        run: >
-          dotnet publish windows/TruckTilt.Host/TruckTilt.Host.csproj
-          --configuration Release
-          --runtime win-x64
-          --self-contained true
-          --output publish
-          -p:PublishSingleFile=true
-          -p:IncludeNativeLibrariesForSelfExtract=true
-          -p:EnableCompressionInSingleFile=true
+          New-Item `
+            -ItemType Directory `
+            -Path $extractPath `
+            -Force | Out-Null
 
+          Write-Host "Extracting HIDMaestro..."
+
+          Expand-Archive `
+            -Path $zipPath `
+            -DestinationPath $extractPath `
+            -Force
+
+          Write-Host "Searching for HIDMaestro.Core.dll..."
+
+          $dll = Get-ChildItem `
+            -Path $extractPath `
+            -Filter "HIDMaestro.Core.dll" `
+            -Recurse `
+            -File |
+            Select-Object -First 1
+
+          if (-not $dll) {
+            Write-Host "ERROR: HIDMaestro.Core.dll was not found."
+            Write-Host ""
+            Write-Host "Contents of extracted package:"
+            Get-ChildItem `
+              -Path $extractPath `
+              -Recurse |
+              Select-Object FullName
+
+            exit 1
+          }
+
+          Write-Host "Found HIDMaestro.Core.dll:"
+          Write-Host $dll.FullName
+
+          $targetDirectory = "windows/TruckTilt.Host/third_party"
+
+          Write-Host "Creating target directory..."
+
+          New-Item `
+            -ItemType Directory `
+            -Path $targetDirectory `
+            -Force | Out-Null
+
+          Write-Host "Copying HIDMaestro.Core.dll..."
+
+          Copy-Item `
+            -Path $dll.FullName `
+            -Destination "$targetDirectory/HIDMaestro.Core.dll" `
+            -Force
+
+          if (-not (Test-Path "$targetDirectory/HIDMaestro.Core.dll")) {
+            Write-Error "Failed to copy HIDMaestro.Core.dll."
+            exit 1
+          }
+
+          Write-Host ""
+          Write-Host "HIDMaestro SDK installed successfully."
+          Write-Host ""
+
+          Get-Item "$targetDirectory/HIDMaestro.Core.dll" |
+            Format-List FullName, Length, LastWriteTime
+
+      # ---------------------------------------------------------
+      # Verify project
+      # ---------------------------------------------------------
+      - name: Verify Windows project
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "windows/TruckTilt.Host/TruckTilt.Host.csproj")) {
+            Write-Error "TruckTilt Windows project was not found."
+            exit 1
+          }
+
+          if (-not (Test-Path "windows/TruckTilt.Host/third_party/HIDMaestro.Core.dll")) {
+            Write-Error "HIDMaestro.Core.dll is missing."
+            exit 1
+          }
+
+          Write-Host "Windows project found."
+          Write-Host "HIDMaestro SDK found."
+
+      # ---------------------------------------------------------
+      # Restore
+      # ---------------------------------------------------------
+      - name: Restore Windows project
+        run: |
+          dotnet restore windows/TruckTilt.Host/TruckTilt.Host.csproj
+
+      # ---------------------------------------------------------
+      # Build
+      # ---------------------------------------------------------
+      - name: Build Windows project
+        run: |
+          dotnet build `
+            windows/TruckTilt.Host/TruckTilt.Host.csproj `
+            --configuration Release `
+            --no-restore
+
+      # ---------------------------------------------------------
+      # Publish self-contained EXE
+      # ---------------------------------------------------------
+      - name: Publish Windows EXE
+        run: |
+          dotnet publish `
+            windows/TruckTilt.Host/TruckTilt.Host.csproj `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained true `
+            --output publish/windows `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true
+
+      # ---------------------------------------------------------
+      # Verify published EXE
+      # ---------------------------------------------------------
+      - name: Verify published EXE
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem `
+            -Path "publish/windows" `
+            -Filter "*.exe" `
+            -File |
+            Select-Object -First 1
+
+          if (-not $exe) {
+            Write-Error "No Windows EXE was produced."
+            exit 1
+          }
+
+          Write-Host "Windows EXE created:"
+          Write-Host $exe.FullName
+
+          Get-Item $exe.FullName |
+            Format-List FullName, Length, LastWriteTime
+
+      # ---------------------------------------------------------
+      # Create ZIP
+      # ---------------------------------------------------------
       - name: Create Windows ZIP
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item publish/TruckTilt.Host.exe dist/TruckTilt.Host.exe
-          @"
-          TruckTilt Windows Host v0.5
+          $zipPath = "TruckTilt-Windows-x64.zip"
 
-          IMPORTANT:
-          Run TruckTilt.Host.exe as Administrator on first launch.
-          Windows will ask for permission to install the virtual controller driver.
+          if (Test-Path $zipPath) {
+            Remove-Item $zipPath -Force
+          }
 
-          After the virtual controller is ready:
-          1. Start TruckTilt.Host.exe.
-          2. Start TruckTilt on Android.
-          3. Open ETS2 / ATS.
-          4. Go to controller/input settings.
-          5. Bind the Xbox 360-style TruckTilt controller.
+          Compress-Archive `
+            -Path "publish/windows/*" `
+            -DestinationPath $zipPath `
+            -CompressionLevel Optimal
 
-          Mapping:
-          Left Stick X = steering
-          LT = brake
-          RT = throttle
-          A/B/X/Y/LB/RB/etc. = truck controls
+          if (-not (Test-Path $zipPath)) {
+            Write-Error "Windows ZIP was not created."
+            exit 1
+          }
 
-          UDP port: 45454
-          "@ | Set-Content dist/README.txt
+          Write-Host "Windows ZIP created:"
+          Get-Item $zipPath |
+            Format-List FullName, Length, LastWriteTime
 
-          Compress-Archive -Path dist/* -DestinationPath TruckTilt-Windows-x64.zip -Force
-
-      - name: Upload EXE
+      # ---------------------------------------------------------
+      # Upload EXE artifact
+      # ---------------------------------------------------------
+      - name: Upload Windows EXE
         uses: actions/upload-artifact@v4
         with:
           name: TruckTilt-Windows-x64
-          path: publish/TruckTilt.Host.exe
+          path: publish/windows/*.exe
+          if-no-files-found: error
 
-      - name: Upload ZIP
+      # ---------------------------------------------------------
+      # Upload ZIP artifact
+      # ---------------------------------------------------------
+      - name: Upload Windows ZIP
         uses: actions/upload-artifact@v4
         with:
           name: TruckTilt-Windows-x64-ZIP
           path: TruckTilt-Windows-x64.zip
+          if-no-files-found: error
