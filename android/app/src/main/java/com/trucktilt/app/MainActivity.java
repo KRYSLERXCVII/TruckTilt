@@ -34,20 +34,9 @@ public class MainActivity extends Activity implements SensorEventListener {
     float gyroAngle = 0f, gyroBias = 0f, tiltAngle = 0f;
     long lastGyroNs = 0;
 
-    // Fixed physical center captured by CALIBRATE.
-    // This is NEVER rewritten automatically while driving.
-    boolean gyroReferenceValid = false;
-    float gyroReferenceZ = 0f;
-    boolean calibrationPending = true;
 
-    // Used only to recognize a genuine return-to-center condition.
-    float lastGyroRateDeg = 0f;
-    long gyroStillSinceMs = 0L;
 
-    // Absolute orientation must remain stable before drift correction is allowed.
-    // This prevents slow turns from being mistaken for a return-to-center.
-    float lastReferenceCheckZ = 0f;
-    long referenceStableSinceMs = 0L;
+
     UdpClient net;
 
     final ScheduledExecutorService networkExecutor =
@@ -113,100 +102,25 @@ public class MainActivity extends Activity implements SensorEventListener {
             lastGyroNs = e.timestamp;
 
             if (dt > 0 && dt < .2f) {
-                float rateDeg = (float)Math.toDegrees(e.values[2] - gyroBias);
-                lastGyroRateDeg = rateDeg;
+                // Gyroscope is the sole steering sensor in GYRO WHEEL mode.
+                // Do not automatically zero or correct the accumulated angle.
+                gyroAngle -= Math.toDegrees(e.values[2] - gyroBias) * dt;
 
-                // This is the original responsive gyro integration.
-                // Do not continuously replace it with rotation-vector data.
-                gyroAngle -= rateDeg * dt;
-
+                // The selected steering range controls the actual virtual
+                // wheel travel: 360/540/720/900/1080 degrees.
                 float half = view == null ? 450f : view.rangeDeg / 2f;
                 gyroAngle = clamp(gyroAngle, -half, half);
-
-                // Remember when the phone has actually become still.
-                // We only use this later for a very gentle center-drift correction.
-                long nowMs = System.currentTimeMillis();
-                if (Math.abs(rateDeg) < 2.0f) {
-                    if (gyroStillSinceMs == 0L) gyroStillSinceMs = nowMs;
-                } else {
-                    gyroStillSinceMs = 0L;
-                }
             }
         } else if (e.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR) {
             float[] r = new float[9];
             SensorManager.getRotationMatrixFromVector(r, e.values);
             float[] o = new float[3];
             SensorManager.getOrientation(r, o);
+
+            // Rotation-vector remains available for GYRO TILT mode only.
             tiltAngle = clamp((float)Math.toDegrees(o[2]), -45f, 45f);
-
-            if (calibrationPending) {
-                gyroReferenceZ = (float)Math.toDegrees(o[2]);
-                gyroReferenceValid = true;
-                calibrationPending = false;
-                gyroAngle = 0f;
-                gyroStillSinceMs = System.currentTimeMillis();
-                referenceStableSinceMs = 0L;
-                lastReferenceCheckZ = gyroReferenceZ;
-            }
-
-            // Rotation-vector data is NOT used as the steering signal.
-            // It is only used after the phone has been still for a moment and
-            // is physically close to the original calibrated orientation.
-            if (gyroReferenceValid && view != null && view.mode == 0) {
-                float currentZ = (float)Math.toDegrees(o[2]);
-                float fromReference = normalizeDegrees(currentZ - gyroReferenceZ);
-
-                long nowMs = System.currentTimeMillis();
-
-                // First require the physical orientation itself to stop moving.
-                // A low gyro rate alone is not enough: a slow turn can also have
-                // a low instantaneous rate.
-                float absoluteDelta = normalizeDegrees(currentZ - lastReferenceCheckZ);
-
-                if (Math.abs(absoluteDelta) < 0.35f &&
-                    Math.abs(lastGyroRateDeg) < 1.0f) {
-                    if (referenceStableSinceMs == 0L)
-                        referenceStableSinceMs = nowMs;
-                } else {
-                    referenceStableSinceMs = 0L;
-                }
-
-                lastReferenceCheckZ = currentZ;
-
-                // Only correct after the phone has remained physically stable
-                // near the ORIGINAL calibrated center for 450 ms AND the
-                // accumulated gyro movement is substantial (>15 degrees).
-                //
-                // This means:
-                // - 3-5 degree curves are never reset
-                // - small steering corrections are never reset
-                // - slow turns are not reset
-                // - crossing through center while turning is not reset
-                // - substantial turns can still have accumulated drift removed
-                //   when the phone genuinely returns to the calibrated center
-                if (referenceStableSinceMs != 0L &&
-                    nowMs - referenceStableSinceMs > 450L &&
-                    Math.abs(fromReference) < 8f &&
-                    Math.abs(gyroAngle) > 15f) {
-
-                    // Only correct accumulated drift after a substantial
-                    // steering movement. Small 3-15 degree curves are NEVER
-                    // reset, so normal fine steering remains fully responsive.
-                    gyroAngle *= 0.35f;
-
-                    if (Math.abs(gyroAngle) < 0.8f)
-                        gyroAngle = 0f;
-                }
-            }
         }
-
         if (view != null) view.invalidate();
-    }
-
-    float normalizeDegrees(float d) {
-        while (d > 180f) d -= 360f;
-        while (d < -180f) d += 360f;
-        return d;
     }
 
     @Override public void onAccuracyChanged(Sensor s, int a) {}
@@ -220,18 +134,11 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     void calibrate() {
+        // Explicit calibration only: zero the current gyro wheel position.
+        // No automatic recalibration happens while driving.
         gyroAngle = 0f;
         gyroBias = 0f;
         lastGyroNs = 0;
-        lastGyroRateDeg = 0f;
-        gyroStillSinceMs = System.currentTimeMillis();
-        referenceStableSinceMs = 0L;
-        lastReferenceCheckZ = 0f;
-
-        // The next rotation-vector sample records the physical orientation
-        // as the fixed center. Normal driving never changes this reference.
-        gyroReferenceValid = false;
-        calibrationPending = true;
 
         view.wheelAngleDeg = 0f;
         view.steer = 0f;
@@ -324,7 +231,7 @@ public class MainActivity extends Activity implements SensorEventListener {
             c.drawRect(0,0,w,58,p);
             // Clean, light branding: keep the creator/version secondary to the app name.
             text(c,"TRUCKTILT",20,37,20,Color.WHITE,Paint.Align.LEFT);
-            text(c,"by KRYSLERXCVII  •  v0.10.3",136,37,15,Color.rgb(205,212,220),Paint.Align.LEFT);
+            text(c,"by KRYSLERXCVII  •  v0.10.18",136,37,15,Color.rgb(205,212,220),Paint.Align.LEFT);
 
             // Prominent support button: red only for the donation CTA so it is
             // immediately discoverable without overpowering the cockpit.
