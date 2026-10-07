@@ -83,6 +83,12 @@ _ = Task.Run(async () =>
                 if (CameraController.TryParse(message, out var dx, out var dy))
                     CameraController.MoveRelative(dx, dy);
             }
+            else if (message.StartsWith("CLICK|LEFT", StringComparison.OrdinalIgnoreCase))
+            {
+                // Camera touchpad tap -> Windows left mouse click.
+                // CameraController also limits this to ETS2/ATS foreground.
+                CameraController.LeftClick();
+            }
             else if (message.StartsWith("INPUT|", StringComparison.OrdinalIgnoreCase))
             {
                 Interlocked.Increment(ref receivedPackets);

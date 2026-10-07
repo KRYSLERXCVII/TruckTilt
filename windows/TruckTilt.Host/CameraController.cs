@@ -14,6 +14,8 @@ internal static class CameraController
     private const double Sensitivity = 1.35;
     private const uint InputMouse = 0;
     private const uint MouseMove = 0x0001;
+    private const uint MouseLeftDown = 0x0002;
+    private const uint MouseLeftUp = 0x0004;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct INPUT
@@ -88,6 +90,42 @@ internal static class CameraController
         };
 
         _ = SendInput(1, new[] { input }, Marshal.SizeOf<INPUT>());
+    }
+
+    public static void LeftClick()
+    {
+        if (!IsTruckSimulatorForeground())
+            return;
+
+        var down = new INPUT
+        {
+            type = InputMouse,
+            mi = new MOUSEINPUT
+            {
+                dx = 0,
+                dy = 0,
+                mouseData = 0,
+                dwFlags = MouseLeftDown,
+                time = 0,
+                dwExtraInfo = IntPtr.Zero
+            }
+        };
+
+        var up = new INPUT
+        {
+            type = InputMouse,
+            mi = new MOUSEINPUT
+            {
+                dx = 0,
+                dy = 0,
+                mouseData = 0,
+                dwFlags = MouseLeftUp,
+                time = 0,
+                dwExtraInfo = IntPtr.Zero
+            }
+        };
+
+        _ = SendInput(2, new[] { down, up }, Marshal.SizeOf<INPUT>());
     }
 
     private static bool IsTruckSimulatorForeground()
