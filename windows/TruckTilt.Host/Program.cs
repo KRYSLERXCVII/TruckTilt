@@ -1,20 +1,39 @@
 using System.Net.Sockets;
 using System.Text;
+using TruckTilt.Host;
 
 const int Port = 45454;
 const int TimeoutMs = 500;
 
-using var udp = new UdpClient(Port);
-udp.EnableBroadcast = true;
-
 Console.Title = "TruckTilt Host";
-Console.WriteLine("TruckTilt Host v0.4.1");
-Console.WriteLine("====================");
+Console.WriteLine("TruckTilt Host v0.5");
+Console.WriteLine("=================");
 Console.WriteLine($"Listening for TruckTilt phones on UDP {Port}");
-Console.WriteLine("Waiting for INPUT packets...");
-Console.WriteLine("Keep this window running while using ETS2 / ATS.");
+Console.WriteLine("Virtual controller: Xbox 360-style analog controller");
 Console.WriteLine("Press Ctrl+C to exit.");
 Console.WriteLine();
+
+VirtualController? virtualController = null;
+
+try
+{
+    Console.WriteLine("Initializing virtual controller...");
+    virtualController = new VirtualController();
+    Console.WriteLine("VIRTUAL CONTROLLER READY");
+    Console.WriteLine("ETS2 / ATS can now bind TruckTilt as a controller.");
+}
+catch (Exception ex)
+{
+    Console.WriteLine();
+    Console.WriteLine("VIRTUAL CONTROLLER ERROR");
+    Console.WriteLine(ex.Message);
+    Console.WriteLine();
+    Console.WriteLine("Run TruckTilt.Host as Administrator and try again.");
+    Console.WriteLine("The network receiver will continue, but ETS2/ATS output is disabled.");
+}
+
+using var udp = new UdpClient(Port);
+udp.EnableBroadcast = true;
 
 var state = InputState.Neutral;
 var lastPacket = DateTime.UtcNow;
@@ -33,12 +52,14 @@ _ = Task.Run(async () =>
 
             if (message.StartsWith("DISCOVER|TruckTilt|", StringComparison.OrdinalIgnoreCase))
             {
-                response = Encoding.UTF8.GetBytes($"HELLO|TruckTilt|0.4.1|{Environment.MachineName}");
+                response = Encoding.UTF8.GetBytes(
+                    $"HELLO|TruckTilt|0.5|{Environment.MachineName}");
                 Console.WriteLine($"DISCOVERY from {result.RemoteEndPoint}");
             }
             else if (message.StartsWith("CONNECT|", StringComparison.OrdinalIgnoreCase))
             {
-                response = Encoding.UTF8.GetBytes($"WELCOME|{Environment.MachineName}");
+                response = Encoding.UTF8.GetBytes(
+                    $"WELCOME|{Environment.MachineName}");
                 Console.WriteLine($"CONNECTED {result.RemoteEndPoint}");
             }
             else if (message.StartsWith("PING|", StringComparison.OrdinalIgnoreCase))
@@ -57,27 +78,40 @@ _ = Task.Run(async () =>
                         lastPacket = DateTime.UtcNow;
                     }
 
-                    Console.WriteLine(
-                        $"INPUT #{receivedPackets,5}  SEQ {parsed.Sequence,6}  " +
-                        $"STEER {parsed.Steering,7:0.000}  THR {parsed.Throttle,5:0.00}  " +
-                        $"BRK {parsed.Brake,5:0.00}  " +
-                        $"LEFT {(parsed.Left ? "ON " : "OFF")}  " +
-                        $"RIGHT {(parsed.Right ? "ON " : "OFF")}  " +
-                        $"LIGHTS {(parsed.Lights ? "ON " : "OFF")}  " +
-                        $"HORN {(parsed.Horn ? "ON " : "OFF")}");
+                    var buttons = parsed.ToButtons();
+
+                    virtualController?.Submit(
+                        parsed.Steering,
+                        parsed.Throttle,
+                        parsed.Brake,
+                        buttons);
+
+                    if (receivedPackets == 1 || receivedPackets % 60 == 0)
+                    {
+                        Console.WriteLine(
+                            $"INPUT #{receivedPackets,6}  " +
+                            $"STEER {parsed.Steering,7:0.000}  " +
+                            $"THR {parsed.Throttle,5:0.00}  " +
+                            $"BRK {parsed.Brake,5:0.00}");
+                    }
                 }
                 else
                 {
-                    Console.WriteLine($"INPUT RECEIVED BUT INVALID ({message.Split('|').Length} fields): {message}");
+                    Console.WriteLine(
+                        $"INPUT RECEIVED BUT INVALID: {message}");
                 }
             }
             else
             {
-                Console.WriteLine($"UNKNOWN PACKET from {result.RemoteEndPoint}: {message}");
+                Console.WriteLine(
+                    $"UNKNOWN PACKET from {result.RemoteEndPoint}: {message}");
             }
 
             if (response is not null)
-                await udp.SendAsync(response, response.Length, result.RemoteEndPoint);
+                await udp.SendAsync(
+                    response,
+                    response.Length,
+                    result.RemoteEndPoint);
         }
         catch (ObjectDisposedException)
         {
@@ -94,18 +128,50 @@ while (true)
 {
     await Task.Delay(100);
 
+    bool timedOut = false;
+
     lock (sync)
     {
         if ((DateTime.UtcNow - lastPacket).TotalMilliseconds > TimeoutMs)
+        {
+            if (state != InputState.Neutral)
+                timedOut = true;
+
             state = InputState.Neutral;
+        }
+    }
+
+    if (timedOut)
+    {
+        virtualController?.Submit(
+            0, 0, 0, InputButtons.None);
+
+        Console.WriteLine("SAFETY TIMEOUT — virtual controller neutralized.");
     }
 }
 
 sealed record InputState(
-    long Sequence, long TimestampMs, double Steering, double Throttle, double Brake, double Clutch,
-    bool Left, bool Right, bool Lights, bool HighBeam, bool Hazard, bool Horn, bool AirHorn,
-    bool Wiper, bool EngineBrake, bool Retarder, bool ParkingBrake, bool Cruise, bool GearUp,
-    bool GearDown, bool EngineStart)
+    long Sequence,
+    long TimestampMs,
+    double Steering,
+    double Throttle,
+    double Brake,
+    double Clutch,
+    bool Left,
+    bool Right,
+    bool Lights,
+    bool HighBeam,
+    bool Hazard,
+    bool Horn,
+    bool AirHorn,
+    bool Wiper,
+    bool EngineBrake,
+    bool Retarder,
+    bool ParkingBrake,
+    bool Cruise,
+    bool GearUp,
+    bool GearDown,
+    bool EngineStart)
 {
     public static readonly InputState Neutral = new(
         0, 0, 0, 0, 0, 0,
@@ -115,16 +181,16 @@ sealed record InputState(
     public static bool TryParse(string packet, out InputState state)
     {
         state = Neutral;
+
         try
         {
             var p = packet.Split('|');
 
-            // v0.4+: INPUT + seq + timestamp + steering + throttle + brake + clutch
-            // + 15 booleans + reserved = 23 fields.
             if (p.Length >= 23)
             {
                 state = new InputState(
-                    long.Parse(p[1]), long.Parse(p[2]),
+                    long.Parse(p[1]),
+                    long.Parse(p[2]),
                     D(p[3]), D(p[4]), D(p[5]), D(p[6]),
                     B(p[7]), B(p[8]), B(p[9]), B(p[10]), B(p[11]),
                     B(p[12]), B(p[13]), B(p[14]), B(p[15]), B(p[16]),
@@ -132,11 +198,11 @@ sealed record InputState(
                 return true;
             }
 
-            // v0.2/v0.3 compatibility: 21 fields, no clutch.
             if (p.Length >= 21)
             {
                 state = new InputState(
-                    long.Parse(p[1]), long.Parse(p[2]),
+                    long.Parse(p[1]),
+                    long.Parse(p[2]),
                     D(p[3]), D(p[4]), D(p[5]), 0,
                     B(p[6]), B(p[7]), B(p[8]), B(p[9]), B(p[10]),
                     B(p[11]), B(p[12]), B(p[13]), B(p[14]), B(p[15]),
@@ -150,6 +216,23 @@ sealed record InputState(
         {
             return false;
         }
+    }
+
+    public InputButtons ToButtons()
+    {
+        var b = InputButtons.None;
+        if (Left) b |= InputButtons.Left;
+        if (Right) b |= InputButtons.Right;
+        if (Lights) b |= InputButtons.Lights;
+        if (HighBeam) b |= InputButtons.HighBeam;
+        if (Hazard) b |= InputButtons.Hazard;
+        if (Horn) b |= InputButtons.Horn;
+        if (AirHorn) b |= InputButtons.AirHorn;
+        if (Wiper) b |= InputButtons.Wiper;
+        if (EngineBrake) b |= InputButtons.EngineBrake;
+        if (Retarder) b |= InputButtons.Retarder;
+        if (ParkingBrake) b |= InputButtons.ParkingBrake;
+        return b;
     }
 
     static double D(string s) =>
