@@ -89,16 +89,6 @@ Fixed a visual/input issue where a control could appear to snap back during live
 
 Live editing now uses the active in-memory rectangle until the edit is finished.
 
-### v0.9.7–v0.9.10 — Branding & UI Polish
-Current branding/UI work includes:
-- TruckTilt application icon
-- `TRUCKTILT` header branding
-- `by KRYSLERXCVII • v0.9` creator/version branding
-- Prominent red **DONATE** button
-- Buy Me a Coffee support link
-- Cleaner button labels without internal numeric IDs
-- Improved header spacing and visual hierarchy
-
 ---
 
 ## Current Steering Modes
@@ -110,63 +100,6 @@ Rotate the phone like a steering wheel.
 
 ### Gyro Tilt
 Tilt the phone left and right to steer.
-
-### Virtual Wheel
-Use the on-screen wheel like a mobile driving game.
-
-Supported virtual steering ranges include:
-
-- 360°
-- 540°
-- 720°
-- 900°
-- 1080°
-- Custom range
-
-The virtual wheel uses incremental angle tracking and a configurable return-to-center behavior.
-
----
-
-## Cockpit Controls
-
-The cockpit includes configurable controls for truck functions including:
-
-- Left indicator
-- Right indicator
-- Horn
-- Air horn
-- Lights
-- High beam
-- Hazard
-- Beacon
-- Engine
-- Cruise control
-- Cruise +
-- Cruise -
-- Parking brake
-- Wiper
-- Wiper +
-- Wiper -
-- Gear up
-- Gear down
-- Engine brake
-- Retarder +
-- Retarder -
-- Retarder
-- Left mirror
-- Right mirror
-- Mirror
-- Camera
-- Route
-- Map
-- Differential lock
-- Trailer
-- Warning
-- Enter
-- Back
-- Clutch
-
-The exact available controls can continue to evolve with the project.
 
 ---
 
@@ -240,8 +173,6 @@ Keep the `.git` directory when replacing project contents in an existing reposit
 
 ## Support
 
-TruckTilt is intended as a community-focused project.
-
 If the project is useful to you, optional support is available through:
 
 **Buy Me a Coffee — KRYSLERXCVII**
@@ -257,11 +188,5 @@ Support is optional and does not affect the controller functionality.
 TruckTilt currently has a working Android cockpit, Windows host, Wi-Fi/UDP communication, virtual controller output, steering/pedal controls, camera touchpad, and customizable cockpit layout.
 
 The project is continuing toward a polished, community-friendly mobile controller for truck simulators.
-
----
-
-## License
-
-Add the project's chosen open-source license to the repository before public release.
 
 If the repository is intended to be open source, a standard license such as MIT can be added as a separate `LICENSE` file.
