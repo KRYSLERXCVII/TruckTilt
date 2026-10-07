@@ -32,6 +32,10 @@ public class MainActivity extends Activity implements SensorEventListener {
     SensorManager sensors;
     Sensor gyro, rotation;
     float gyroAngle = 0f, gyroBias = 0f, tiltAngle = 0f;
+    boolean gyroReferenceValid=false;
+    float gyroReferenceZ=0f;
+    float gyroCorrection=0f;
+    boolean pendingGyroCalibration=true;
     long lastGyroNs = 0;
     UdpClient net;
 
@@ -106,7 +110,32 @@ public class MainActivity extends Activity implements SensorEventListener {
             SensorManager.getRotationMatrixFromVector(r, e.values);
             float[] o = new float[3];
             SensorManager.getOrientation(r, o);
+
             tiltAngle = clamp((float)Math.toDegrees(o[2]), -45f, 45f);
+
+            float currentZ=(float)Math.toDegrees(o[2]);
+
+            // Capture the physical center only after an explicit CALIBRATE.
+            if(pendingGyroCalibration){
+                gyroReferenceZ=currentZ;
+                gyroReferenceValid=true;
+                pendingGyroCalibration=false;
+                gyroAngle=0f;
+                gyroCorrection=0f;
+            }
+
+            // Correct accumulated gyro drift without changing the calibrated
+            // reference. This prevents a sharp turn from permanently moving
+            // the steering center.
+            if(gyroReferenceValid && view!=null && view.mode==0){
+                float absoluteAngle=normalizeDegrees(currentZ-gyroReferenceZ);
+                float error=normalizeDegrees(absoluteAngle-gyroAngle);
+                gyroCorrection += error*0.08f;
+                gyroCorrection *= 0.94f;
+                gyroAngle += gyroCorrection;
+                float half=view.rangeDeg/2f;
+                gyroAngle=clamp(gyroAngle,-half,half);
+            }
         }
         if (view != null) view.invalidate();
     }
@@ -122,15 +151,25 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     void calibrate() {
-        gyroAngle = 0f;
-        gyroBias = 0f;
-        lastGyroNs = 0;
-        view.wheelAngleDeg = 0f;
-        view.steer = 0f;
+        // The next rotation-vector sample records the current physical phone
+        // orientation as the fixed steering center.
+        pendingGyroCalibration=true;
+        gyroAngle=0f;
+        gyroBias=0f;
+        gyroCorrection=0f;
+        lastGyroNs=0;
+        view.wheelAngleDeg=0f;
+        view.steer=0f;
         view.invalidate();
     }
 
     static float clamp(float v, float a, float b) { return Math.max(a, Math.min(b, v)); }
+
+    float normalizeDegrees(float d){
+        while(d>180f)d-=360f;
+        while(d<-180f)d+=360f;
+        return d;
+    }
 
     class ControllerView extends View {
         final Paint p = new Paint(3);
@@ -163,6 +202,10 @@ public class MainActivity extends Activity implements SensorEventListener {
         boolean cameraDragging = false;
         int cameraPointerId = -1;
         float cameraLastX = 0f, cameraLastY = 0f;
+        float cameraTapStartX=0f, cameraTapStartY=0f;
+        long cameraTapStartMs=0L;
+        boolean cameraMoved=false;
+        boolean cameraClickPending=false;
         boolean wheelReturning = false;
         int wheelPointerId = -1;
         int mode = 2; // 0 gyro wheel, 1 gyro tilt, 2 virtual wheel
@@ -542,6 +585,10 @@ public class MainActivity extends Activity implements SensorEventListener {
                     cameraPointerId=pointerId;
                     cameraDragging=true;
                     cameraLastX=x; cameraLastY=y;
+                    cameraTapStartX=x;
+                    cameraTapStartY=y;
+                    cameraTapStartMs=System.currentTimeMillis();
+                    cameraMoved=false;
                     return true;
                 }
 
@@ -647,6 +694,8 @@ public class MainActivity extends Activity implements SensorEventListener {
                         cameraDx += nx-cameraLastX;
                         cameraDy += ny-cameraLastY;
                     }
+                    if(Math.abs(nx-cameraTapStartX)>10f ||
+                       Math.abs(ny-cameraTapStartY)>10f) cameraMoved=true;
                     cameraLastX=nx; cameraLastY=ny;
                 }
                 return true;
@@ -664,8 +713,14 @@ public class MainActivity extends Activity implements SensorEventListener {
                     startWheelReturn();
                 }
                 if(pointerId==cameraPointerId){
+                    long duration=System.currentTimeMillis()-cameraTapStartMs;
+                    if(action!=MotionEvent.ACTION_CANCEL &&
+                       !cameraMoved && duration<=450L){
+                        synchronized(cameraSync){ cameraClickPending=true; }
+                    }
                     cameraPointerId=-1;
                     cameraDragging=false;
+                    cameraMoved=false;
                 }
                 if(pointerId==activePedalPointer){ activePedalPointer=-1; setPedal(activePedal,0f); activePedal=null; }
                 invalidate(); return true;
@@ -813,6 +868,14 @@ public class MainActivity extends Activity implements SensorEventListener {
             }
         }
 
+        boolean consumeCameraClick(){
+            synchronized(cameraSync){
+                boolean click=cameraClickPending;
+                cameraClickPending=false;
+                return click;
+            }
+        }
+
         void setPedal(String s,float v){
             if("CLUTCH".equals(s)) clutch=v;
             else if("BRAKE".equals(s)) brake=v;
@@ -900,6 +963,10 @@ public class MainActivity extends Activity implements SensorEventListener {
                     // screen convention, so no inversion is needed here.
                     String cm=String.format(Locale.US,"CAMERA|%.2f|%.2f",cam[0],cam[1]);
                     sendRaw(cm,host,hostPort);
+                }
+
+                if(v.consumeCameraClick()){
+                    sendRaw("CLICK|LEFT",host,hostPort);
                 }
             }catch(Exception ex){ lastSendError=ex.getClass().getSimpleName(); }
             long now=System.currentTimeMillis();
