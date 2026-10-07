@@ -14,7 +14,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * TruckTilt v0.7.3
+ * TruckTilt v0.7.4
  * Android side of the Wi-Fi steering-wheel controller.
  *
  * The phone sends a normalized wheel/pedal state plus 32 independent buttons.
@@ -163,57 +163,61 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         @Override protected void onDraw(Canvas c) {
             super.onDraw(c);
-            int w = getWidth(), h = getHeight();
+            int w=getWidth(), h=getHeight();
             c.drawColor(Color.rgb(7,9,11));
 
+            // Header
             p.setStyle(Paint.Style.FILL); p.setColor(Color.rgb(18,22,26));
             c.drawRect(0,0,w,58,p);
             text(c,"TRUCKTILT",20,37,20,Color.WHITE,Paint.Align.LEFT);
             text(c,net.connected ? "● CONNECTED" : "● SEARCHING",
                     w-390,34,13,net.connected?Color.rgb(139,195,74):Color.rgb(255,180,50),Paint.Align.LEFT);
-            String status = net.connected
-                    ? net.rttMs+" ms  •  "+net.rate+" Hz  •  TX "+net.txCount
-                    : "Wi-Fi only • auto discovery";
+            String status=net.connected ? net.rttMs+" ms  •  "+net.rate+" Hz  •  TX "+net.txCount : "Wi-Fi only • auto discovery";
             text(c,status,w-18,34,13,Color.LTGRAY,Paint.Align.RIGHT);
 
-            // Central controls
-            float cx=w/2f, cy=h*.53f, radius=Math.min(175,h*.29f);
-            wheelRect.set(cx-radius,cy-radius,cx+radius,cy+radius);
-            drawWheel(c,cx,cy,radius);
+            // Three clean cockpit zones: large steering wheel on the LEFT,
+            // large independent truck buttons in the CENTER, pedals on the RIGHT.
+            float leftWidth=w*.36f;
+            float centerLeft=w*.38f, centerRight=w*.70f;
+            float pedalLeft=w*.74f, pedalRight=w*.98f;
 
-            button(c,"MODE",cx-65,72,105,32,false);
-            button(c,rangeDeg+"°",cx+65,72,105,32,false);
-            button(c,"CALIBRATE",cx,cy+radius+24,130,30,false);
+            // Steering wheel
+            float wheelCx=leftWidth*.50f;
+            float wheelCy=h*.53f;
+            float radius=Math.min(leftWidth*.39f,h*.36f);
+            wheelRect.set(wheelCx-radius,wheelCy-radius,wheelCx+radius,wheelCy+radius);
+            drawWheel(c,wheelCx,wheelCy,radius);
 
-            // Four banks around the wheel. Every entry has a dedicated HID button.
-            float leftX=72, rightX=w-72;
-            float top=75, gap=49;
-            for(int i=0;i<16;i++) {
-                int col=i/8, row=i%8;
-                float x=col==0?leftX:rightX;
-                float y=top+row*gap;
-                drawMappedButton(c,i,x,y,132,38);
+            button("MODE",wheelCx-72,76,125,38,false);
+            button(rangeDeg+"°",wheelCx+72,76,125,38,false);
+            button("CALIBRATE",wheelCx,wheelCy+radius+28,150,36,false);
+
+            // Center: 32 large, evenly spaced controls (4 columns x 8 rows).
+            float colW=(centerRight-centerLeft)/4f;
+            float buttonW=Math.min(150,colW-12);
+            float top=88f, rowGap=Math.min(57f,(h-115f)/8f);
+            for(int i=0;i<32;i++) {
+                int col=i%4, row=i/4;
+                float x=centerLeft+colW*(col+.5f);
+                float y=top+rowGap*(row+.5f);
+                drawMappedButton(c,i,x,y,buttonW,46);
             }
-            // second pair of columns gives compact labels for the same banks
-            // without changing the physical button count.
-            for(int i=16;i<32;i++) {
-                int j=i-16;
-                int col=j/8, row=j%8;
-                float x=col==0?235:w-235;
-                float y=top+row*gap;
-                drawMappedButton(c,i,x,y,118,38);
-            }
 
-            // Pedals / axes along the bottom.
-            drawPedal(c,"CLUTCH",120,h-62,150,48,clutch);
-            drawPedal(c,"BRAKE",cx-115,h-62,150,48,brake);
-            drawPedal(c,"THROTTLE",cx+115,h-62,150,48,throttle);
-            drawPedal(c,"RETARDER",w-120,h-62,150,48,retarder);
+            // Right: large pedal controls. Each is an independent analog input.
+            float pw=Math.min(205,(pedalRight-pedalLeft-24)/2f);
+            float px1=pedalLeft+(pedalRight-pedalLeft)*.27f;
+            float px2=pedalLeft+(pedalRight-pedalLeft)*.73f;
+            float py1=h*.42f, py2=h*.62f;
+            drawPedal(c,"THROTTLE",px1,py1,pw,105,throttle);
+            drawPedal(c,"BRAKE",px2,py1,pw,105,brake);
+            drawPedal(c,"CLUTCH",px1,py2,pw,105,clutch);
+            drawPedal(c,"RETARDER",px2,py2,pw,105,retarder);
 
-            String modeText = mode==0?"GYRO WHEEL":mode==1?"GYRO TILT":"VIRTUAL WHEEL";
-            text(c,modeText,cx,cy+7,14,Color.LTGRAY,Paint.Align.CENTER);
+            text(c,"PEDALS",(pedalLeft+pedalRight)/2f,92,14,Color.LTGRAY,Paint.Align.CENTER);
+            String modeText=mode==0?"GYRO WHEEL":mode==1?"GYRO TILT":"VIRTUAL WHEEL";
+            text(c,modeText,wheelCx,wheelCy+8,14,Color.LTGRAY,Paint.Align.CENTER);
             text(c,String.format(Locale.US,"%+.0f° / %d°",currentSteeringDegrees(),rangeDeg),
-                    cx,cy+34,15,Color.rgb(139,195,74),Paint.Align.CENTER);
+                    wheelCx,wheelCy+36,15,Color.rgb(139,195,74),Paint.Align.CENTER);
 
             if(net.lastSendError!=null)
                 text(c,"TX ERROR: "+net.lastSendError,w-18,55,10,Color.rgb(255,100,100),Paint.Align.RIGHT);
