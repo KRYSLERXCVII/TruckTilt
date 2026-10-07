@@ -1,24 +1,20 @@
-# TruckTilt UDP Protocol
+# TruckTilt UDP Protocol v0.4
 
 Port: `45454`
-
-All messages are UTF-8 text for V0.2 simplicity.
 
 ## Discovery
 
 Phone broadcasts:
 
-`DISCOVER|TruckTilt|0.2`
+`DISCOVER|TruckTilt|0.4`
 
 Windows replies:
 
-`HELLO|TruckTilt|0.2|<host-name>`
+`HELLO|TruckTilt|0.4|<host-name>`
 
-## Connect
+Phone then sends:
 
-Phone sends:
-
-`CONNECT|<client-id>`
+`CONNECT|<device-model>`
 
 Windows replies:
 
@@ -26,24 +22,34 @@ Windows replies:
 
 ## Input
 
-Phone sends approximately 60 packets/second:
+Phone sends input at approximately 60 Hz:
 
-`INPUT|<sequence>|<unix-ms>|<steer>|<throttle>|<brake>|<clutch>|<left>|<right>|<hazard>|<lights>|<highbeam>|<horn>|<airhorn>|<wiper>|<enginebrake>|<retarder>|<cruise>|<parking>|<engine>|<gearup>|<geardown>`
+`INPUT|seq|timestampMs|steering|throttle|brake|clutch|left|right|lights|highBeam|hazard|horn|airHorn|wiper|engineBrake|retarder|parking|cruise|gearUp|gearDown|engine|reserved`
 
-Analog values are normalized `-1.0..1.0` for steering and `0.0..1.0` for pedals.
+All boolean values are `0` or `1`.
+
+Steering is normalized from `-1.0` to `+1.0`.
 
 ## Ping
 
-Phone:
+Phone sends:
 
-`PING|<unix-ms>`
+`PING|timestampMs`
 
-Windows:
+Windows replies:
 
-`PONG|<unix-ms>`
+`PONG|timestampMs`
 
-Phone calculates round-trip time from the echoed timestamp.
+The phone calculates round-trip latency from the timestamp.
 
 ## Safety
 
-Windows tracks the time of the latest INPUT packet. If no packet arrives for 500 ms, the host must force all analog values to neutral and all momentary controls off.
+The Windows host should neutralize all inputs when no valid input packet has been received for more than 500 ms.
+
+## v0.4 goals
+
+- Fixed-rate input transmission independent of screen redraw.
+- Real ping/RTT measurement.
+- Actual input packet-rate measurement.
+- Correct field ordering between Android and Windows.
+- Virtual wheel range represented as ±450° for a 900° wheel.

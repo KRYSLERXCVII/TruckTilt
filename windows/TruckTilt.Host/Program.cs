@@ -8,8 +8,8 @@ using var udp = new UdpClient(Port);
 udp.EnableBroadcast = true;
 
 Console.Title = "TruckTilt Host";
-Console.WriteLine("TruckTilt Host");
-Console.WriteLine("==============");
+Console.WriteLine("TruckTilt Host v0.4");
+Console.WriteLine("=================");
 Console.WriteLine($"Listening for TruckTilt phones on UDP {Port}");
 Console.WriteLine("Keep this window running while using ETS2 / ATS.");
 Console.WriteLine("Press Ctrl+C to exit.");
@@ -31,7 +31,7 @@ _ = Task.Run(async () =>
 
             if (message.StartsWith("DISCOVER|TruckTilt|", StringComparison.OrdinalIgnoreCase))
             {
-                response = Encoding.UTF8.GetBytes($"HELLO|TruckTilt|0.3.1|{Environment.MachineName}");
+                response = Encoding.UTF8.GetBytes($"HELLO|TruckTilt|0.4|{Environment.MachineName}");
             }
             else if (message.StartsWith("CONNECT|", StringComparison.OrdinalIgnoreCase))
             {
@@ -51,9 +51,14 @@ _ = Task.Run(async () =>
                 }
 
                 Console.WriteLine(
-                    $"STEER {parsed.Steering,7:0.000}  THR {parsed.Throttle,5:0.00}  " +
-                    $"BRK {parsed.Brake,5:0.00}  HORN {(parsed.Horn ? "ON " : "OFF")}  " +
-                    $"HAZ {(parsed.Hazard ? "ON " : "OFF")}");
+                    $"SEQ {parsed.Sequence,6}  " +
+                    $"STEER {parsed.Steering,7:0.000}  " +
+                    $"THR {parsed.Throttle,5:0.00}  " +
+                    $"BRK {parsed.Brake,5:0.00}  " +
+                    $"LEFT {(parsed.Left ? "ON " : "OFF")}  " +
+                    $"RIGHT {(parsed.Right ? "ON " : "OFF")}  " +
+                    $"LIGHTS {(parsed.Lights ? "ON " : "OFF")}  " +
+                    $"HORN {(parsed.Horn ? "ON " : "OFF")}");
             }
 
             if (response is not null)
@@ -77,39 +82,84 @@ while (true)
     lock (sync)
     {
         if ((DateTime.UtcNow - lastPacket).TotalMilliseconds > TimeoutMs)
+        {
+            if (state != InputState.Neutral)
+                Console.WriteLine("SAFETY TIMEOUT — inputs neutralized.");
+
             state = InputState.Neutral;
+        }
     }
 }
 
 sealed record InputState(
-    long Sequence, long TimestampMs, double Steering, double Throttle, double Brake,
-    bool Left, bool Right, bool Lights, bool HighBeam, bool Hazard, bool Horn,
-    bool AirHorn, bool Wiper, bool EngineBrake, bool Retarder, bool ParkingBrake,
-    bool Cruise, bool GearUp, bool GearDown, bool EngineStart)
+    long Sequence,
+    long TimestampMs,
+    double Steering,
+    double Throttle,
+    double Brake,
+    double Clutch,
+    bool Left,
+    bool Right,
+    bool Lights,
+    bool HighBeam,
+    bool Hazard,
+    bool Horn,
+    bool AirHorn,
+    bool Wiper,
+    bool EngineBrake,
+    bool Retarder,
+    bool ParkingBrake,
+    bool Cruise,
+    bool GearUp,
+    bool GearDown,
+    bool EngineStart)
 {
     public static readonly InputState Neutral = new(
-        0, 0, 0, 0, 0, false, false, false, false, false,
-        false, false, false, false, false, false, false, false, false, false);
+        0, 0, 0, 0, 0, 0,
+        false, false, false, false, false, false, false, false,
+        false, false, false, false, false, false, false);
 
     public static bool TryParse(string packet, out InputState state)
     {
         state = Neutral;
+
         try
         {
             var p = packet.Split('|');
-            if (p.Length < 21) return false;
+
+            // INPUT + 6 numeric fields + 15 booleans + reserved = 23 fields.
+            if (p.Length < 23)
+                return false;
 
             state = new InputState(
-                long.Parse(p[1]), long.Parse(p[2]),
+                long.Parse(p[1]),
+                long.Parse(p[2]),
                 double.Parse(p[3], System.Globalization.CultureInfo.InvariantCulture),
                 double.Parse(p[4], System.Globalization.CultureInfo.InvariantCulture),
                 double.Parse(p[5], System.Globalization.CultureInfo.InvariantCulture),
-                p[6] == "1", p[7] == "1", p[8] == "1", p[9] == "1",
-                p[10] == "1", p[11] == "1", p[12] == "1", p[13] == "1",
-                p[14] == "1", p[15] == "1", p[16] == "1", p[17] == "1",
-                p[18] == "1", p[19] == "1", p[20] == "1");
+                double.Parse(p[6], System.Globalization.CultureInfo.InvariantCulture),
+
+                p[7] == "1",   // left
+                p[8] == "1",   // right
+                p[9] == "1",   // lights
+                p[10] == "1",  // high beam
+                p[11] == "1",  // hazard
+                p[12] == "1",  // horn
+                p[13] == "1",  // air horn
+                p[14] == "1",  // wiper
+                p[15] == "1",  // engine brake
+                p[16] == "1",  // retarder
+                p[17] == "1",  // parking brake
+                p[18] == "1",  // cruise
+                p[19] == "1",  // gear up
+                p[20] == "1",  // gear down
+                p[21] == "1"); // engine start/stop
+
             return true;
         }
-        catch { return false; }
+        catch
+        {
+            return false;
+        }
     }
 }

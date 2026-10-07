@@ -35,3 +35,10 @@ This version is the network/input foundation. The Windows host currently receive
 UDP port: `45454`
 
 The phone and Windows PC should be on the same LAN, including a Windows Mobile Hotspot connection.
+
+
+## v0.4 input transport
+
+The Android controller now sends controller packets on a fixed ~60 Hz timer instead of relying on screen redraws. The top-right Hz value measures actual transmitted input packets over a one-second window, while latency is measured using a real PING/PONG round trip.
+
+The virtual wheel uses a 900° range represented as -450° to +450°.
