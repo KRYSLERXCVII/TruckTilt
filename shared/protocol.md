@@ -1,4 +1,4 @@
-# TruckTilt UDP Protocol v0.7
+# TruckTilt UDP Protocol v0.7.2
 
 Port: `45454`
 
@@ -6,11 +6,11 @@ Port: `45454`
 
 Phone broadcasts:
 
-`DISCOVER|TruckTilt|0.7`
+`DISCOVER|TruckTilt|0.7.2`
 
 Windows replies:
 
-`HELLO|TruckTilt|0.7|<host-name>`
+`HELLO|TruckTilt|0.7.2|<host-name>`
 
 Phone then sends:
 

@@ -14,7 +14,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * TruckTilt v0.7
+ * TruckTilt v0.7.2
  * Android side of the Wi-Fi steering-wheel controller.
  *
  * The phone sends a normalized wheel/pedal state plus 32 independent buttons.
@@ -362,7 +362,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                 rx=new Thread(this::receiveLoop,"TruckTilt-RX"); rx.start();
                 discovery=new Thread(()->{
                     while(running.get()&&!connected){
-                        try{ sendRaw("DISCOVER|TruckTilt|0.7",InetAddress.getByName("255.255.255.255"),PORT); Thread.sleep(1000); }
+                        try{ sendRaw("DISCOVER|TruckTilt|0.7.2",InetAddress.getByName("255.255.255.255"),PORT); Thread.sleep(1000); }
                         catch(Exception ignored){}
                     }
                 },"TruckTilt-Discovery"); discovery.start();

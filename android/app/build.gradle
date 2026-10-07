@@ -9,7 +9,7 @@ android {
         minSdk 26
         targetSdk 35
         versionCode 7
-        versionName '0.7.0'
+        versionName '0.7.2'
     }
 
     java { toolchain { languageVersion = JavaLanguageVersion.of(17) } }

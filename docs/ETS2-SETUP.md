@@ -28,11 +28,11 @@ Select the TruckTilt wheel in the controller/input section.
 
 Bind:
 
-- Steering → Wheel axis
-- Acceleration → Z axis
-- Brake → Rz axis
-- Clutch → Slider axis
-- Retarder → Dial axis
+- Steering → **X axis**
+- Acceleration → **Z axis**
+- Brake → **Rz axis**
+- Clutch → **Slider axis**
+- Retarder → **Dial axis**
 - Clutch → Clutch
 - Retarder → Retarder axis or the dedicated retarder buttons
 - Truck controls → their numbered TruckTilt buttons
@@ -41,7 +41,7 @@ Bind:
 
 If this PC was previously used with TruckTilt v0.5/v0.6, remove the old Xbox controller from the ETS2 bindings or create a clean controller profile.
 
-The v0.7 device is intentionally a different HID device. Do not keep old D-pad assignments from the Xbox build when testing the new wheel.
+The v0.7.2 device is intentionally a different HID device. Do not keep old D-pad assignments from the Xbox build when testing the new wheel.
 
 ## 4. Button test order
 
