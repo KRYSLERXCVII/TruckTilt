@@ -20,6 +20,6 @@ Windows is built by `.github/workflows/windows.yml`.
 Keep the repository `.git` directory when replacing the project contents.
 
 
-## v0.7.4.3
+## v0.7.4.4
 
 Fixes clutch and retarder HID axes by declaring them as the 3rd and 4th HIDMaestro trigger slots, which allocate Slider and Dial. The Android APK/protocol remains compatible; only the Windows host needs updating.

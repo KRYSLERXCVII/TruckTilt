@@ -52,7 +52,7 @@ public sealed class VirtualWheel : IDisposable
             .AddPidFfbBlock();
 
         _profile = new HMProfileBuilder()
-            .Id("trucktilt-virtual-wheel-v0742")
+            .Id("trucktilt-virtual-wheel-v0744")
             .Name("TruckTilt Virtual Steering Wheel")
             .Vendor("TruckTilt")
             .Vid(0xCAFE)
@@ -62,7 +62,7 @@ public sealed class VirtualWheel : IDisposable
             .Type("wheel")
             .Connection("usb")
             .FromDescriptorBuilder(descriptor)
-            .Notes("TruckTilt ETS2 wheel: X steering, Rx throttle, Ry brake, Slider clutch, Dial retarder, 32 buttons, 8-way POV.")
+            .Notes("TruckTilt ETS2 wheel: X steering, Rx throttle, Ry brake, Slider clutch, Dial retarder, 32 buttons, 8-way POV. Extra Slider/Dial axes are driven directly by HID usage.")
             .Build();
 
         Console.WriteLine($"Custom HID profile: {_profile.Name}");
@@ -135,13 +135,19 @@ public sealed class VirtualWheel : IDisposable
         // use 0.5 as center, so steering -1..+1 becomes 0..1.
         _axes[HMAxis.X] = (float)((steering + 1.0) * 0.5);
 
-        // Use the actual descriptor-declared trigger usages.
-        // AddTrigger("Left") allocates Rx here; AddTrigger("Right") allocates Ry.
+        // HIDMaestro's public Profile.Triggers list intentionally exposes only
+        // the semantic Left/Right trigger pair. Our descriptor contains two
+        // additional trigger-slot fields (Slider and Dial), so those MUST be
+        // addressed directly by their HID usages. The previous implementation
+        // tried to access triggers[2]/[3], but that list only contains two
+        // entries, leaving Slider and Dial permanently at their defaults.
         var triggers = _profile.Triggers;
         if (triggers.Count > 0) _axes[triggers[0].Axis] = (float)throttle;
         if (triggers.Count > 1) _axes[triggers[1].Axis] = (float)brake;
-        if (triggers.Count > 2) _axes[triggers[2].Axis] = (float)clutch;
-        if (triggers.Count > 3) _axes[triggers[3].Axis] = (float)retarder;
+
+        // Extra DirectInput pedal axes.
+        _axes[HMAxis.Slider] = (float)clutch;
+        _axes[HMAxis.Dial] = (float)retarder;
 
         var state = new HMGamepadState
         {
