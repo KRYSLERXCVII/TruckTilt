@@ -212,7 +212,7 @@ public class MainActivity extends Activity implements SensorEventListener {
             c.drawRect(0,0,w,58,p);
             // Clean, light branding: keep the creator/version secondary to the app name.
             text(c,"TRUCKTILT",20,37,20,Color.WHITE,Paint.Align.LEFT);
-            text(c,"by KRYSLERXCVII  •  v0.9",136,37,15,Color.rgb(205,212,220),Paint.Align.LEFT);
+            text(c,"by KRYSLERXCVII  •  v0.10.3",136,37,15,Color.rgb(205,212,220),Paint.Align.LEFT);
 
             // Prominent support button: red only for the donation CTA so it is
             // immediately discoverable without overpowering the cockpit.
