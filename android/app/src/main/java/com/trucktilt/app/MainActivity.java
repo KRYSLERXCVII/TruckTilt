@@ -43,6 +43,11 @@ public class MainActivity extends Activity implements SensorEventListener {
     // Used only to recognize a genuine return-to-center condition.
     float lastGyroRateDeg = 0f;
     long gyroStillSinceMs = 0L;
+
+    // Absolute orientation must remain stable before drift correction is allowed.
+    // This prevents slow turns from being mistaken for a return-to-center.
+    float lastReferenceCheckZ = 0f;
+    long referenceStableSinceMs = 0L;
     UdpClient net;
 
     final ScheduledExecutorService networkExecutor =
@@ -140,25 +145,46 @@ public class MainActivity extends Activity implements SensorEventListener {
                 calibrationPending = false;
                 gyroAngle = 0f;
                 gyroStillSinceMs = System.currentTimeMillis();
+                referenceStableSinceMs = 0L;
+                lastReferenceCheckZ = gyroReferenceZ;
             }
 
             // Rotation-vector data is NOT used as the steering signal.
             // It is only used after the phone has been still for a moment and
             // is physically close to the original calibrated orientation.
-            if (gyroReferenceValid && view != null && view.mode == 0 &&
-                gyroStillSinceMs != 0L &&
-                System.currentTimeMillis() - gyroStillSinceMs > 120L) {
-
+            if (gyroReferenceValid && view != null && view.mode == 0) {
                 float currentZ = (float)Math.toDegrees(o[2]);
                 float fromReference = normalizeDegrees(currentZ - gyroReferenceZ);
 
-                // Only correct when the physical phone is genuinely close to
-                // the calibrated center. A sharp turn is therefore untouched.
-                if (Math.abs(fromReference) < 12f) {
-                    // Once the phone is physically back near the calibrated
-                    // center, remove accumulated gyro drift quickly. The gyro
-                    // remains the steering source during the turn; this only
-                    // acts during the return-to-center zone.
+                long nowMs = System.currentTimeMillis();
+
+                // First require the physical orientation itself to stop moving.
+                // A low gyro rate alone is not enough: a slow turn can also have
+                // a low instantaneous rate.
+                float absoluteDelta = normalizeDegrees(currentZ - lastReferenceCheckZ);
+
+                if (Math.abs(absoluteDelta) < 0.35f &&
+                    Math.abs(lastGyroRateDeg) < 1.0f) {
+                    if (referenceStableSinceMs == 0L)
+                        referenceStableSinceMs = nowMs;
+                } else {
+                    referenceStableSinceMs = 0L;
+                }
+
+                lastReferenceCheckZ = currentZ;
+
+                // Only correct after the phone has remained physically stable
+                // near the ORIGINAL calibrated center for 450 ms.
+                //
+                // This means:
+                // - slow turns are not reset
+                // - crossing through center while turning is not reset
+                // - sharp turns are not reset
+                // - genuinely returning to center and stopping is corrected fast
+                if (referenceStableSinceMs != 0L &&
+                    nowMs - referenceStableSinceMs > 450L &&
+                    Math.abs(fromReference) < 8f) {
+
                     gyroAngle *= 0.35f;
 
                     if (Math.abs(gyroAngle) < 0.8f)
@@ -192,6 +218,8 @@ public class MainActivity extends Activity implements SensorEventListener {
         lastGyroNs = 0;
         lastGyroRateDeg = 0f;
         gyroStillSinceMs = System.currentTimeMillis();
+        referenceStableSinceMs = 0L;
+        lastReferenceCheckZ = 0f;
 
         // The next rotation-vector sample records the physical orientation
         // as the fixed center. Normal driving never changes this reference.
