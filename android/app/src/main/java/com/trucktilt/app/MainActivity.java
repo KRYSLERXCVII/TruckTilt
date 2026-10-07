@@ -605,9 +605,9 @@ public class MainActivity extends Activity implements SensorEventListener {
                 return true;
             }
 
-            // Multi-touch: update the pedal first. Previously the wheel's MOVE
-            // handler returned immediately, which prevented a second finger from
-            // continuously moving throttle/brake while steering.
+            // Multi-touch: update each active control independently. Steering,
+            // throttle/brake, and camera each keep their own pointer ID, so one
+            // finger can pan the camera while another operates a pedal or wheel.
             if(action==MotionEvent.ACTION_MOVE && activePedalPointer>=0) {
                 int idx=e.findPointerIndex(activePedalPointer);
                 if(idx>=0 && ("THROTTLE".equals(activePedal) || "BRAKE".equals(activePedal))) {
@@ -636,11 +636,9 @@ public class MainActivity extends Activity implements SensorEventListener {
                 }
             }
 
-            if(action==MotionEvent.ACTION_MOVE &&
-               (wheelDragging || activePedalPointer>=0)) {
-                return true;
-            }
-
+            // Do NOT return here: camera movement must be allowed to run in
+            // the same ACTION_MOVE event as steering or a pedal. Each active
+            // control uses its own pointer ID, so all three can move together.
             if(action==MotionEvent.ACTION_MOVE && cameraDragging && cameraPointerId>=0) {
                 int idx=e.findPointerIndex(cameraPointerId);
                 if(idx>=0) {
