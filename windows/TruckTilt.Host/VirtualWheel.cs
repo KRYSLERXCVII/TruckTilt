@@ -52,7 +52,7 @@ public sealed class VirtualWheel : IDisposable
             .AddPidFfbBlock();
 
         _profile = new HMProfileBuilder()
-            .Id("trucktilt-virtual-wheel-v073")
+            .Id("trucktilt-virtual-wheel-v0742")
             .Name("TruckTilt Virtual Steering Wheel")
             .Vendor("TruckTilt")
             .Vid(0xCAFE)
@@ -62,7 +62,7 @@ public sealed class VirtualWheel : IDisposable
             .Type("wheel")
             .Connection("usb")
             .FromDescriptorBuilder(descriptor)
-            .Notes("TruckTilt ETS2 wheel: X steering, Z throttle, Rz brake, Slider clutch, Dial retarder, 32 buttons, 8-way POV.")
+            .Notes("TruckTilt ETS2 wheel: X steering, Rx throttle, Ry brake, Slider clutch, Dial retarder, 32 buttons, 8-way POV.")
             .Build();
 
         Console.WriteLine($"Custom HID profile: {_profile.Name}");
@@ -74,14 +74,25 @@ public sealed class VirtualWheel : IDisposable
 
         _controller = _context.CreateController(_profile, "TruckTilt-VirtualWheel");
 
-        // Start with a complete canonical state dictionary. X is centered;
-        // Y is centered but unused; Z/Rz/Slider/Dial are released.
+        // HIDMaestro's AddStick/AddTrigger allocator is positional.
+        // With one stick followed by two triggers, the descriptor is:
+        //   X/Y       = steering stick pair
+        //   Rx        = first trigger slot (our throttle)
+        //   Ry        = second trigger slot (our brake)
+        //   Slider    = clutch
+        //   Dial      = retarder
+        // Do NOT write Z/Rz here: those usages are not declared by this
+        // descriptor. The joy.cpl screenshot made that mismatch visible.
         _axes = HMGamepadStateHelpers.StandardAxes(
             _profile,
             leftStickX: 0.5f,
             leftStickY: 0.5f,
             leftTrigger: 0f,
             rightTrigger: 0f);
+
+        var triggers = _profile.Triggers;
+        if (triggers.Count > 0) _axes[triggers[0].Axis] = 0f;
+        if (triggers.Count > 1) _axes[triggers[1].Axis] = 0f;
         _axes[HMAxis.Slider] = 0f;
         _axes[HMAxis.Dial] = 0f;
 
@@ -121,8 +132,13 @@ public sealed class VirtualWheel : IDisposable
         // HIDMaestro uses [0..1] for all state values. Signed centered axes
         // use 0.5 as center, so steering -1..+1 becomes 0..1.
         _axes[HMAxis.X] = (float)((steering + 1.0) * 0.5);
-        _axes[HMAxis.Z] = (float)throttle;
-        _axes[HMAxis.Rz] = (float)brake;
+
+        // Use the actual descriptor-declared trigger usages.
+        // AddTrigger("Left") allocates Rx here; AddTrigger("Right") allocates Ry.
+        var triggers = _profile.Triggers;
+        if (triggers.Count > 0) _axes[triggers[0].Axis] = (float)throttle;
+        if (triggers.Count > 1) _axes[triggers[1].Axis] = (float)brake;
+
         _axes[HMAxis.Slider] = (float)clutch;
         _axes[HMAxis.Dial] = (float)retarder;
 
