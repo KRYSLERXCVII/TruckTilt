@@ -42,3 +42,15 @@ The phone and Windows PC should be on the same LAN, including a Windows Mobile H
 The Android controller now sends controller packets on a fixed ~60 Hz timer instead of relying on screen redraws. The top-right Hz value measures actual transmitted input packets over a one-second window, while latency is measured using a real PING/PONG round trip.
 
 The virtual wheel uses a 900° range represented as -450° to +450°.
+
+
+## v0.4.1 diagnostics
+
+Windows accepts both legacy and v0.4 input packets and logs discovery, connection, received packets, and malformed packets.
+
+
+## v0.5 virtual controller
+
+TruckTilt now has a Windows virtual-controller adapter. The Windows host uses HIDMaestro to expose an Xbox 360-style controller to Windows. This is the first ETS2/ATS integration layer: the game can bind the analog steering, throttle and brake axes instead of receiving keyboard A/D input.
+
+The first launch requires Administrator privileges because Windows virtual controller creation requires elevation. The driver installation is handled by the HIDMaestro SDK.

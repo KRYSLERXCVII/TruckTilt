@@ -53,3 +53,15 @@ The Windows host should neutralize all inputs when no valid input packet has bee
 - Actual input packet-rate measurement.
 - Correct field ordering between Android and Windows.
 - Virtual wheel range represented as ±450° for a 900° wheel.
+
+
+## Virtual controller v0.5
+
+Windows exposes an Xbox 360-style virtual controller through HIDMaestro:
+
+- Left Stick X: steering (-1..+1)
+- LT: brake (0..1)
+- RT: throttle (0..1)
+- A/B/X/Y/LB/RB/Back/Start/L3/R3/Guide: truck controls
+
+The virtual controller is neutralized when the phone has not sent a valid input packet for 500 ms.
