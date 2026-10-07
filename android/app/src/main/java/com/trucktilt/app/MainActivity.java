@@ -14,7 +14,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * TruckTilt v0.7.2
+ * TruckTilt v0.7.3
  * Android side of the Wi-Fi steering-wheel controller.
  *
  * The phone sends a normalized wheel/pedal state plus 32 independent buttons.

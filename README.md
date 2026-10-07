@@ -1,8 +1,8 @@
-# TruckTilt v0.7.2
+# TruckTilt v0.7.3
 
 TruckTilt turns an Android phone into a Wi-Fi truck-simulator controller for ETS2/ATS.
 
-## v0.7.2 ETS2 DirectInput axis compatibility
+## v0.7.3 ETS2 DirectInput axis compatibility
 
 This release changes the Windows HID descriptor again after testing with ETS2.
 The virtual device is still a custom wheel with 32 buttons, but its analog axes
@@ -17,7 +17,7 @@ now use the conventional DirectInput `DIJOYSTATE2` position-axis slots:
 The previous v0.7.1 build used the HID `Wheel` usage for steering. That could be
 visible in Windows `joy.cpl` but ETS2's axis-capture screen did not accept it.
 HIDMaestro documents X/Y/Z/Rx/Ry/Rz/Slider/Dial as the eight DirectInput
-position-axis slots, so v0.7.2 deliberately stays inside that vocabulary.
+position-axis slots, so v0.7.3 deliberately stays inside that vocabulary.
 
 ## First test
 
