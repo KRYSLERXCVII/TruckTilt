@@ -134,6 +134,9 @@ public class MainActivity extends Activity implements SensorEventListener {
         boolean customizing = false;
         String editKey = null;
         boolean editResizing = false;
+        int editPointerId = -1;
+        float editStartX = 0f, editStartY = 0f;
+        final RectF editStartRect = new RectF();
         float editOffsetX = 0f, editOffsetY = 0f;
 
         float steer = 0f, throttle = 0f, brake = 0f, clutch = 0f, retarder = 0f;
@@ -372,9 +375,20 @@ public class MainActivity extends Activity implements SensorEventListener {
             stroke.setColor(Color.rgb(58,68,76));
             c.drawRoundRect(r,16,16,stroke);
 
-            text(c,"CAMERA TOUCHPAD",r.centerX(),r.centerY()-8,14,Color.WHITE,Paint.Align.CENTER);
-            text(c,"SWIPE TO LOOK",r.centerX(),r.centerY()+16,10,Color.LTGRAY,Paint.Align.CENTER);
-            text(c,"←  LOOK  →",r.centerX(),r.bottom-18,10,Color.rgb(139,195,74),Paint.Align.CENTER);
+            drawControlLabel(c,"CAMERA TOUCHPAD",r,14,Color.WHITE);
+            text(c,"SWIPE TO LOOK",r.centerX(),
+                    r.centerY()+Math.min(30f,r.height()*0.18f),
+                    10,Color.LTGRAY,Paint.Align.CENTER);
+            text(c,"←  LOOK  →",r.centerX(),r.bottom-18,10,
+                    Color.rgb(139,195,74),Paint.Align.CENTER);
+        }
+
+        void drawControlLabel(Canvas c, String label, RectF r, float baseSize, int color) {
+            // Text belongs to the control rectangle: its position and size are
+            // derived from the customized rectangle, never the original layout.
+            float size = Math.max(9f, Math.min(baseSize * 1.45f,
+                    Math.min(r.height() * 0.30f, r.width() / Math.max(6f, label.length() * 0.58f))));
+            text(c,label,r.centerX(),r.centerY()+size*0.34f,size,color,Paint.Align.CENTER);
         }
 
         void drawMappedButton(Canvas c,int index,float cx,float cy,float bw,float bh) {
@@ -385,8 +399,8 @@ public class MainActivity extends Activity implements SensorEventListener {
             p.setStyle(Paint.Style.FILL);
             p.setColor(active?Color.rgb(139,195,74):Color.rgb(27,32,37));
             c.drawRoundRect(r,9,9,p);
-            text(c,(index+1)+"  "+buttonNames[index],cx,cy+4,9,
-                    active?Color.rgb(7,9,11):Color.WHITE,Paint.Align.CENTER);
+            drawControlLabel(c,(index+1)+"  "+buttonNames[index],r,9,
+                    active?Color.rgb(7,9,11):Color.WHITE);
         }
 
         void button(Canvas c,String label,float cx,float cy,float bw,float bh,boolean active) {
@@ -423,8 +437,10 @@ public class MainActivity extends Activity implements SensorEventListener {
             p.setColor(Color.WHITE);
             c.drawRoundRect(new RectF(r.left+10,markerY-3,r.right-10,markerY+3),3,3,p);
 
-            text(c,label,cx,cy+4,10,Color.WHITE,Paint.Align.CENTER);
-            text(c,String.format(Locale.US,"%d%%",(int)(v*100f)),cx,cy+22,9,Color.LTGRAY,Paint.Align.CENTER);
+            drawControlLabel(c,label,r,10,Color.WHITE);
+            text(c,String.format(Locale.US,"%d%%",(int)(v*100f)),
+                    r.centerX(),r.centerY()+Math.min(24f,r.height()*0.25f),
+                    9,Color.LTGRAY,Paint.Align.CENTER);
         }
 
         void drawPedal(Canvas c,String label,float cx,float cy,float bw,float bh,float value) {
@@ -436,7 +452,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                 p.setColor(Color.rgb(139,195,74));
                 c.drawRoundRect(new RectF(r.left,r.top,r.left+bw*clamp(value,0,1),r.bottom),10,10,p);
             }
-            text(c,label,cx,cy+4,10,Color.WHITE,Paint.Align.CENTER);
+            drawControlLabel(c,label,r,10,Color.WHITE);
         }
 
         @Override public boolean onTouchEvent(MotionEvent e) {
@@ -461,13 +477,18 @@ public class MainActivity extends Activity implements SensorEventListener {
                     String k=findEditableKey(x,y);
                     if(k!=null){
                         editKey=k;
+                        editPointerId=pointerId;
                         RectF r=controls.get(k);
+                        editStartRect.set(r);
+                        editStartX=x;
+                        editStartY=y;
                         editResizing=isResizeHandle(r,x,y);
                         editOffsetX=x-r.centerX();
                         editOffsetY=y-r.centerY();
                         invalidate();
                     } else {
                         editKey=null;
+                        editPointerId=-1;
                         editResizing=false;
                         invalidate();
                     }
@@ -512,24 +533,34 @@ public class MainActivity extends Activity implements SensorEventListener {
             }
 
             if(customizing) {
-                if(action==MotionEvent.ACTION_MOVE && editKey!=null) {
+                if(editPointerId>=0 && action==MotionEvent.ACTION_MOVE &&
+                   e.findPointerIndex(editPointerId)>=0 && editKey!=null) {
+                    int idx=e.findPointerIndex(editPointerId);
+                    float mx=e.getX(idx), my=e.getY(idx);
                     RectF r=controls.get(editKey);
                     if(r!=null) {
+                        float dx=mx-editStartX;
+                        float dy=my-editStartY;
+
                         if(editResizing){
-                            float minW=70f, minH=42f;
-                            r.right=Math.max(r.left+minW,x);
-                            r.bottom=Math.max(r.top+minH,y);
-                            r.right=Math.min(getWidth()-8f,r.right);
-                            r.bottom=Math.min(getHeight()-8f,r.bottom);
+                            // Continuous bottom-right resize. No grid or step snapping.
+                            float minW=40f, minH=32f;
+                            float right=clamp(editStartRect.right+dx,
+                                    editStartRect.left+minW,getWidth()-8f);
+                            float bottom=clamp(editStartRect.bottom+dy,
+                                    editStartRect.top+minH,getHeight()-8f);
+                            r.set(editStartRect.left,editStartRect.top,right,bottom);
                         } else {
-                            float dx=x-r.centerX()-editOffsetX;
-                            float dy=y-r.centerY()-editOffsetY;
-                            float nx=r.left+dx, ny=r.top+dy;
-                            float maxX=getWidth()-r.width()-8f;
-                            float maxY=getHeight()-r.height()-8f;
+                            // 1:1 movement: finger delta equals control delta.
+                            float nx=editStartRect.left+dx;
+                            float ny=editStartRect.top+dy;
+                            float maxX=getWidth()-editStartRect.width()-8f;
+                            float maxY=getHeight()-editStartRect.height()-8f;
                             nx=clamp(nx,8f,Math.max(8f,maxX));
                             ny=clamp(ny,62f,Math.max(62f,maxY));
-                            r.offsetTo(nx,ny);
+                            r.set(nx,ny,
+                                  nx+editStartRect.width(),
+                                  ny+editStartRect.height());
                         }
                         invalidate();
                     }
@@ -537,6 +568,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                 }
                 if(action==MotionEvent.ACTION_UP || action==MotionEvent.ACTION_CANCEL) {
                     if(editKey!=null) saveCustomRect(editKey,controls.get(editKey));
+                    editPointerId=-1;
                     editResizing=false;
                     return true;
                 }
@@ -633,7 +665,8 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
 
         boolean isResizeHandle(RectF r,float x,float y) {
-            return r!=null && x>=r.right-32f && y>=r.bottom-32f;
+            // Larger handle makes resizing easier; resizing itself remains 1:1.
+            return r!=null && x>=r.right-44f && y>=r.bottom-44f;
         }
 
         RectF customRect(String key,RectF def) {
@@ -671,7 +704,7 @@ public class MainActivity extends Activity implements SensorEventListener {
             p.setColor(Color.argb(225,18,23,28));
             c.drawRoundRect(new RectF(getWidth()/2f-250,getHeight()-58,
                     getWidth()/2f+250,getHeight()-12),12,12,p);
-            text(c,"CUSTOMIZE • DRAG TO MOVE • BOTTOM-RIGHT CORNER TO RESIZE • DONE TO LOCK",
+            text(c,"CUSTOMIZE • DRAG FREELY • RESIZE FREELY • DONE TO LOCK",
                     getWidth()/2f,getHeight()-30,11,Color.WHITE,Paint.Align.CENTER);
 
             if(editKey!=null) {
