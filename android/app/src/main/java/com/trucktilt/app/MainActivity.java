@@ -185,53 +185,88 @@ public class MainActivity extends Activity implements SensorEventListener {
             String status=net.connected ? net.rttMs+" ms  •  "+net.rate+" Hz  •  TX "+net.txCount : "Wi-Fi only • auto discovery";
             text(c,status,w-18,34,13,Color.LTGRAY,Paint.Align.RIGHT);
 
-            // Three clean cockpit zones: large steering wheel on the LEFT,
-            // large independent truck buttons in the CENTER, pedals on the RIGHT.
-            float leftWidth=w*.36f;
-            float centerLeft=w*.38f, centerRight=w*.70f;
-            float pedalLeft=w*.74f, pedalRight=w*.98f;
+            // Truck cockpit layout:
+            // LEFT   = steering + frequently used steering-wheel controls
+            // CENTER = grouped truck functions + camera touchpad
+            // RIGHT  = progressive pedals + drivetrain controls
+            float leftWidth=w*.34f;
+            float centerLeft=w*.36f, centerRight=w*.72f;
+            float pedalLeft=w*.75f, pedalRight=w*.99f;
 
-            // Steering wheel
+            // -----------------------------------------------------------------
+            // STEERING AREA
+            // -----------------------------------------------------------------
             float wheelCx=leftWidth*.50f;
-            float wheelCy=h*.53f;
-            float radius=Math.min(leftWidth*.39f,h*.36f);
+            float wheelCy=h*.56f;
+            float radius=Math.min(leftWidth*.39f,h*.34f);
             wheelRect.set(wheelCx-radius,wheelCy-radius,wheelCx+radius,wheelCy+radius);
+
+            // Keep the three setup controls: MODE, steering range and CALIBRATE.
+            button(c,"MODE",wheelCx-88,78,105,38,false);
+            button(c,rangeDeg+"°",wheelCx+20,78,88,38,false);
+            button(c,"CALIBRATE",wheelCx+111,78,115,38,false);
+
+            // Steering-wheel quick controls: indicators on either side, horns above.
+            drawMappedButton(c,0,wheelCx-radius*.82f,wheelCy-radius*.34f,108,44); // LEFT
+            drawMappedButton(c,1,wheelCx+radius*.82f,wheelCy-radius*.34f,108,44); // RIGHT
+            drawMappedButton(c,5,wheelCx,wheelCy-radius-34,108,44);                 // HORN
+            drawMappedButton(c,6,wheelCx,wheelCy-radius-82,108,44);                 // AIR HORN
+
             drawWheel(c,wheelCx,wheelCy,radius);
 
-            button(c,"MODE",wheelCx-72,76,125,38,false);
-            button(c,rangeDeg+"°",wheelCx+72,76,125,38,false);
-            button(c,"CALIBRATE",wheelCx,wheelCy+radius+28,150,42,false);
+            // -----------------------------------------------------------------
+            // CENTER: grouped controls. The four most-used wheel controls above
+            // are removed from this grid, leaving 28 controls in logical groups.
+            // -----------------------------------------------------------------
+            final int[] centerButtons = {
+                    3, 2, 4, 24,
+                    13, 14, 15, 17,
+                    16, 7, 8, 9,
+                    28, 29, 23, 20,
+                    21, 22, 25, 26,
+                    27, 30, 31
+            };
 
-            // Center: 32 large, evenly spaced controls (4 columns x 8 rows).
             float colW=(centerRight-centerLeft)/4f;
-            float buttonW=Math.min(150,colW-12);
-            float top=88f, rowGap=Math.min(57f,(h-115f)/8f);
-            for(int i=0;i<32;i++) {
-                int col=i%4, row=i/4;
+            float buttonW=Math.min(150,colW-10);
+            float top=86f;
+            float rowGap=Math.min(54f,(h*.48f-top)/7f);
+            for(int n=0;n<centerButtons.length;n++) {
+                int col=n%4, row=n/4;
                 float x=centerLeft+colW*(col+.5f);
                 float y=top+rowGap*(row+.5f);
-                drawMappedButton(c,i,x,y,buttonW,46);
+                drawMappedButton(c,centerButtons[n],x,y,buttonW,42);
             }
 
-            // Dedicated relative camera trackpad below the 32-button grid.
-            // It never overlaps the buttons, steering wheel, or pedals.
-            float cameraLeft=centerLeft, cameraRight=centerRight;
-            float cameraTop=top+rowGap*8f+8f, cameraBottom=h*.94f;
-            if(cameraBottom>cameraTop+60f)
+            // Camera touchpad occupies the lower center and remains independent
+            // from every truck button.
+            float cameraLeft=centerLeft+8f, cameraRight=centerRight-8f;
+            float cameraTop=top+rowGap*7f+14f, cameraBottom=h*.94f;
+            if(cameraBottom>cameraTop+70f)
                 drawCameraPad(c,cameraLeft,cameraTop,cameraRight,cameraBottom);
 
-            // Right: progressive vertical throttle/brake sliders.
-            // Clutch and retarder remain press-and-hold controls.
-            float pw=Math.min(205,(pedalRight-pedalLeft-24)/2f);
+            // -----------------------------------------------------------------
+            // PEDALS / DRIVETRAIN
+            // -----------------------------------------------------------------
+            float pw=Math.min(190,(pedalRight-pedalLeft-24)/2f);
             float px1=pedalLeft+(pedalRight-pedalLeft)*.27f;
             float px2=pedalLeft+(pedalRight-pedalLeft)*.73f;
-            float py1=h*.43f, py2=h*.72f;
-            drawProgressivePedal(c,"THROTTLE",px1,py1,pw,250,throttle);
-            drawProgressivePedal(c,"BRAKE",px2,py1,pw,250,brake);
-            drawPedal(c,"CLUTCH",px1,py2,pw,92,clutch);
-            drawPedal(c,"RETARDER",px2,py2,pw,92,retarder);
 
-            text(c,"PEDALS",(pedalLeft+pedalRight)/2f,92,14,Color.LTGRAY,Paint.Align.CENTER);
+            text(c,"PEDALS",(pedalLeft+pedalRight)/2f,78,14,Color.LTGRAY,Paint.Align.CENTER);
+            float py1=h*.37f;
+            drawProgressivePedal(c,"THROTTLE",px1,py1,pw,270,throttle);
+            drawProgressivePedal(c,"BRAKE",px2,py1,pw,270,brake);
+
+            // Gear and engine controls are deliberately close to the pedals.
+            drawMappedButton(c,18,px1,h*.60f,pw*.88f,44); // GEAR UP
+            drawMappedButton(c,19,px2,h*.60f,pw*.88f,44); // GEAR DOWN
+            drawMappedButton(c,10,px1,h*.67f,pw*.88f,44); // ENGINE BRAKE
+            drawMappedButton(c,11,px2,h*.67f,pw*.88f,44); // RETARDER+
+            drawMappedButton(c,12,px2,h*.74f,pw*.88f,44); // RETARDER-
+
+            drawPedal(c,"CLUTCH",px1,h*.84f,pw*.88f,62,clutch);
+            drawPedal(c,"RETARDER",px2,h*.84f,pw*.88f,62,retarder);
+
             String modeText=mode==0?"GYRO WHEEL":mode==1?"GYRO TILT":"VIRTUAL WHEEL";
             text(c,modeText,wheelCx,wheelCy+8,14,Color.LTGRAY,Paint.Align.CENTER);
             text(c,String.format(Locale.US,"%+.0f° / %d°",currentSteeringDegrees(),rangeDeg),
