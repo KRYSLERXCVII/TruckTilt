@@ -1,0 +1,61 @@
+name: Windows Host
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+    paths:
+      - "windows/**"
+      - ".github/workflows/windows.yml"
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Publish self-contained single EXE
+        run: >
+          dotnet publish windows/TruckTilt.Host/TruckTilt.Host.csproj
+          -c Release
+          -r win-x64
+          --self-contained true
+          -p:PublishSingleFile=true
+          -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+          -o publish
+
+      - name: Create distribution ZIP
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item publish/TruckTilt.Host.exe dist/TruckTilt.Host.exe
+
+          @"
+          TruckTilt Windows Host
+
+          Extract this ZIP and double-click TruckTilt.Host.exe.
+
+          UDP port: 45454
+          "@ | Set-Content dist/README.txt
+
+          Compress-Archive -Path dist/* -DestinationPath TruckTilt-Windows-x64.zip -Force
+
+      - name: Upload ready-to-run EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: TruckTilt-Windows-x64
+          path: publish/TruckTilt.Host.exe
+
+      - name: Upload Windows ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: TruckTilt-Windows-x64-ZIP
+          path: TruckTilt-Windows-x64.zip
