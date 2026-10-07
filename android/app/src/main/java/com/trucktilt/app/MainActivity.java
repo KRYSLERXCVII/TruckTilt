@@ -13,6 +13,7 @@ import android.view.*;
 import java.net.*;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.*;
 
 public class MainActivity extends Activity implements SensorEventListener {
     static final int PORT = 45454;
@@ -24,24 +25,11 @@ public class MainActivity extends Activity implements SensorEventListener {
     float gyroAngle = 0f, gyroBias = 0f, tiltAngle = 0f;
     long lastGyroNs = 0;
     UdpClient net;
-    final Handler networkHandler = new Handler(Looper.getMainLooper());
-    boolean networkLoopRunning = false;
-
-    final Runnable inputTick = new Runnable() {
-        @Override public void run() {
-            if (!networkLoopRunning) return;
-            net.sendCurrentInput(view);
-            networkHandler.postDelayed(this, INPUT_INTERVAL_MS);
-        }
-    };
-
-    final Runnable pingTick = new Runnable() {
-        @Override public void run() {
-            if (!networkLoopRunning) return;
-            net.sendPing();
-            networkHandler.postDelayed(this, 1000);
-        }
-    };
+    final ScheduledExecutorService networkExecutor =
+            Executors.newScheduledThreadPool(2);
+    ScheduledFuture<?> inputFuture;
+    ScheduledFuture<?> pingFuture;
+    volatile boolean networkLoopRunning = false;
 
     @Override public void onCreate(Bundle b) {
         super.onCreate(b);
@@ -62,8 +50,24 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     void startNetworkLoop() {
         networkLoopRunning = true;
-        networkHandler.post(inputTick);
-        networkHandler.postDelayed(pingTick, 500);
+
+        inputFuture = networkExecutor.scheduleAtFixedRate(() -> {
+            try {
+                if (networkLoopRunning && net != null)
+                    net.sendCurrentInput(view);
+            } catch (Throwable t) {
+                net.lastSendError = t.getClass().getSimpleName();
+            }
+        }, 0, INPUT_INTERVAL_MS, TimeUnit.MILLISECONDS);
+
+        pingFuture = networkExecutor.scheduleAtFixedRate(() -> {
+            try {
+                if (networkLoopRunning && net != null)
+                    net.sendPing();
+            } catch (Throwable t) {
+                net.lastSendError = t.getClass().getSimpleName();
+            }
+        }, 500, 1000, TimeUnit.MILLISECONDS);
     }
 
     @Override protected void onResume() {
@@ -79,8 +83,9 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     @Override protected void onDestroy() {
         networkLoopRunning = false;
-        networkHandler.removeCallbacks(inputTick);
-        networkHandler.removeCallbacks(pingTick);
+        if (inputFuture != null) inputFuture.cancel(true);
+        if (pingFuture != null) pingFuture.cancel(true);
+        networkExecutor.shutdownNow();
         if (net != null) net.stop();
         super.onDestroy();
     }
@@ -171,8 +176,15 @@ public class MainActivity extends Activity implements SensorEventListener {
             String status=net.connected?"● CONNECTED":"● SEARCHING";
             int sc=net.connected?Color.rgb(139,195,74):Color.rgb(255,180,50);
             text(c,status,w-220,31,14,sc,Paint.Align.LEFT);
-            text(c,net.connected?(net.rttMs+" ms  •  "+net.rate+" Hz"):"Wi-Fi only",
-                    w-20,31,14,Color.LTGRAY,Paint.Align.RIGHT);
+            String tx = net.connected
+                    ? (net.rttMs+" ms  •  "+net.rate+" Hz  •  TX "+net.txCount)
+                    : "Wi-Fi only";
+            text(c,tx,w-20,31,14,Color.LTGRAY,Paint.Align.RIGHT);
+
+            if (net.lastSendError != null) {
+                text(c,"TX ERROR: "+net.lastSendError,w-20,50,11,
+                        Color.rgb(255,100,100),Paint.Align.RIGHT);
+            }
 
             float y=84;
             button(c,"LEFT",60,y,72,44,left,()->{});
@@ -350,8 +362,11 @@ public class MainActivity extends Activity implements SensorEventListener {
         Thread rx,discovery;
         WifiManager.MulticastLock lock;
 
-        long packetsSent=0;
+        long sequence=0;
+        volatile long txCount=0;
+        long rateWindowPackets=0;
         long rateWindowStart=System.currentTimeMillis();
+        volatile String lastSendError=null;
 
         void startDiscovery(){
             try{
@@ -372,8 +387,10 @@ public class MainActivity extends Activity implements SensorEventListener {
                 discovery=new Thread(()->{
                     while(running.get() && !connected){
                         try{
-                            sendRaw("DISCOVER|TruckTilt|0.4",
-                                    InetAddress.getByName("255.255.255.255"),PORT);
+                            try {
+                                sendRaw("DISCOVER|TruckTilt|0.4",
+                                        InetAddress.getByName("255.255.255.255"),PORT);
+                            } catch(Exception ignored) {}
                             Thread.sleep(1000);
                         }catch(Exception ignored){}
                     }
@@ -399,7 +416,11 @@ public class MainActivity extends Activity implements SensorEventListener {
                         host=p.getAddress();
                         hostPort=p.getPort();
                         connected=true;
-                        sendRaw("CONNECT|"+android.os.Build.MODEL,host,hostPort);
+                        try {
+                            sendRaw("CONNECT|"+android.os.Build.MODEL,host,hostPort);
+                        } catch(Exception ex) {
+                            lastSendError=ex.getClass().getSimpleName();
+                        }
                     }
                     else if(s.startsWith("WELCOME|")){
                         connected=true;
@@ -428,41 +449,51 @@ public class MainActivity extends Activity implements SensorEventListener {
 
             v.steer=s;
 
-            long seq=++packetsSent;
+            long seq=++sequence;
             long ts=System.currentTimeMillis();
 
             String m=String.format(Locale.US,
-                    "INPUT|%d|%d|%.4f|%.4f|%.4f|%.4f|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d",
+                    "INPUT|%d|%d|%.4f|%.4f|%.4f|%.4f|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d|%d",
                     seq,ts,s,v.throttle,v.brake,v.clutch,
                     b(v.left),b(v.right),b(v.lights),b(v.highbeam),b(v.hazard),
                     b(v.horn),b(v.airhorn),b(v.wiper),b(v.engineBrake),b(v.retarder),
                     b(v.parking),b(v.cruise),b(v.gearUp),b(v.gearDown),b(v.engine),
                     0);
 
-            // Keep the packet rate independent of drawing/rendering.
-            sendRaw(m,host,hostPort);
+            try {
+                sendRaw(m,host,hostPort);
+                txCount++;
+                rateWindowPackets++;
+                lastSendError=null;
+            } catch (Throwable t) {
+                lastSendError=t.getClass().getSimpleName();
+            }
 
             long now=System.currentTimeMillis();
             if(now-rateWindowStart>=1000){
-                rate=(int)packetsSent;
-                packetsSent=0;
+                rate=(int)rateWindowPackets;
+                rateWindowPackets=0;
                 rateWindowStart=now;
             }
         }
 
         void sendPing(){
             if(!connected || host==null) return;
-            sendRaw("PING|"+System.currentTimeMillis(),host,hostPort);
+            try {
+                sendRaw("PING|"+System.currentTimeMillis(),host,hostPort);
+            } catch(Exception ex) {
+                lastSendError=ex.getClass().getSimpleName();
+            }
         }
 
         int b(boolean x){return x?1:0;}
 
-        void sendRaw(String s,InetAddress a,int p){
-            try{
-                if(socket==null || socket.isClosed()) return;
-                byte[] d=s.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-                socket.send(new DatagramPacket(d,d.length,a,p));
-            }catch(Exception ignored){}
+        void sendRaw(String s,InetAddress a,int p) throws Exception {
+            if(socket==null || socket.isClosed())
+                throw new IllegalStateException("socket_closed");
+
+            byte[] d=s.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            socket.send(new DatagramPacket(d,d.length,a,p));
         }
 
         void stop(){
