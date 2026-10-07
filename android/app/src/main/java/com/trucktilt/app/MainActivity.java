@@ -210,14 +210,19 @@ public class MainActivity extends Activity implements SensorEventListener {
             // Header
             p.setStyle(Paint.Style.FILL); p.setColor(Color.rgb(18,22,26));
             c.drawRect(0,0,w,58,p);
+            // Clean, light branding: keep the creator/version secondary to the app name.
             text(c,"TRUCKTILT",20,37,20,Color.WHITE,Paint.Align.LEFT);
-            text(c,"by KRYSLERXCVII - v0.9",112,37,18,Color.rgb(244,70,70),Paint.Align.LEFT);
-            // Small non-intrusive support button lives in the header.
-            button(c,"DONATE",w-76,29,112,34,false);
+            text(c,"by KRYSLERXCVII  •  v0.9",136,37,15,Color.rgb(205,212,220),Paint.Align.LEFT);
+
+            // Prominent support button: red only for the donation CTA so it is
+            // immediately discoverable without overpowering the cockpit.
+            donateButton(c,"DONATE",w-82,29,132,38);
+
+            // Keep connection diagnostics clearly separated from the donation CTA.
             text(c,net.connected ? "● CONNECTED" : "● SEARCHING",
-                    w-230,25,12,net.connected?Color.rgb(139,195,74):Color.rgb(255,180,50),Paint.Align.RIGHT);
+                    w-168,22,11,net.connected?Color.rgb(139,195,74):Color.rgb(255,180,50),Paint.Align.RIGHT);
             String status=net.connected ? net.rttMs+" ms  •  "+net.rate+" Hz  •  TX "+net.txCount : "Wi-Fi only • auto discovery";
-            text(c,status,w-145,44,11,Color.LTGRAY,Paint.Align.RIGHT);
+            text(c,status,w-168,42,10,Color.LTGRAY,Paint.Align.RIGHT);
 
             // Truck cockpit layout:
             // LEFT   = steering + frequently used steering-wheel controls
@@ -414,7 +419,7 @@ public class MainActivity extends Activity implements SensorEventListener {
             p.setStyle(Paint.Style.FILL);
             p.setColor(active?Color.rgb(139,195,74):Color.rgb(27,32,37));
             c.drawRoundRect(r,9,9,p);
-            drawControlLabel(c,(index+1)+"  "+buttonNames[index],r,9,
+            drawControlLabel(c,buttonNames[index],r,9,
                     active?Color.rgb(7,9,11):Color.WHITE);
         }
 
@@ -424,6 +429,15 @@ public class MainActivity extends Activity implements SensorEventListener {
             p.setStyle(Paint.Style.FILL); p.setColor(active?Color.rgb(139,195,74):Color.rgb(27,32,37));
             c.drawRoundRect(r,9,9,p);
             text(c,label,cx,cy+4,10,active?Color.rgb(7,9,11):Color.WHITE,Paint.Align.CENTER);
+        }
+
+        void donateButton(Canvas c,String label,float cx,float cy,float bw,float bh) {
+            RectF r=new RectF(cx-bw/2,cy-bh/2,cx+bw/2,cy+bh/2);
+            controls.put(label,r);
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(Color.rgb(190,42,52));
+            c.drawRoundRect(r,10,10,p);
+            text(c,label,cx,cy+4,11,Color.WHITE,Paint.Align.CENTER);
         }
 
         void drawProgressivePedal(Canvas c,String label,float cx,float cy,float bw,float bh,float value) {
