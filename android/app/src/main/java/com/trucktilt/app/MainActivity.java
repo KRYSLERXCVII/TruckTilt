@@ -32,11 +32,17 @@ public class MainActivity extends Activity implements SensorEventListener {
     SensorManager sensors;
     Sensor gyro, rotation;
     float gyroAngle = 0f, gyroBias = 0f, tiltAngle = 0f;
-    boolean gyroReferenceValid=false;
-    float gyroReferenceZ=0f;
-    float gyroCorrection=0f;
-    boolean pendingGyroCalibration=true;
     long lastGyroNs = 0;
+
+    // Fixed physical center captured by CALIBRATE.
+    // This is NEVER rewritten automatically while driving.
+    boolean gyroReferenceValid = false;
+    float gyroReferenceZ = 0f;
+    boolean calibrationPending = true;
+
+    // Used only to recognize a genuine return-to-center condition.
+    float lastGyroRateDeg = 0f;
+    long gyroStillSinceMs = 0L;
     UdpClient net;
 
     final ScheduledExecutorService networkExecutor =
@@ -100,44 +106,72 @@ public class MainActivity extends Activity implements SensorEventListener {
             if (lastGyroNs == 0) lastGyroNs = e.timestamp;
             float dt = (e.timestamp - lastGyroNs) / 1_000_000_000f;
             lastGyroNs = e.timestamp;
+
             if (dt > 0 && dt < .2f) {
-                gyroAngle -= Math.toDegrees(e.values[2] - gyroBias) * dt;
+                float rateDeg = (float)Math.toDegrees(e.values[2] - gyroBias);
+                lastGyroRateDeg = rateDeg;
+
+                // This is the original responsive gyro integration.
+                // Do not continuously replace it with rotation-vector data.
+                gyroAngle -= rateDeg * dt;
+
                 float half = view == null ? 450f : view.rangeDeg / 2f;
                 gyroAngle = clamp(gyroAngle, -half, half);
+
+                // Remember when the phone has actually become still.
+                // We only use this later for a very gentle center-drift correction.
+                long nowMs = System.currentTimeMillis();
+                if (Math.abs(rateDeg) < 2.0f) {
+                    if (gyroStillSinceMs == 0L) gyroStillSinceMs = nowMs;
+                } else {
+                    gyroStillSinceMs = 0L;
+                }
             }
         } else if (e.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR) {
             float[] r = new float[9];
             SensorManager.getRotationMatrixFromVector(r, e.values);
             float[] o = new float[3];
             SensorManager.getOrientation(r, o);
-
             tiltAngle = clamp((float)Math.toDegrees(o[2]), -45f, 45f);
 
-            float currentZ=(float)Math.toDegrees(o[2]);
-
-            // Capture the physical center only after an explicit CALIBRATE.
-            if(pendingGyroCalibration){
-                gyroReferenceZ=currentZ;
-                gyroReferenceValid=true;
-                pendingGyroCalibration=false;
-                gyroAngle=0f;
-                gyroCorrection=0f;
+            if (calibrationPending) {
+                gyroReferenceZ = (float)Math.toDegrees(o[2]);
+                gyroReferenceValid = true;
+                calibrationPending = false;
+                gyroAngle = 0f;
+                gyroStillSinceMs = System.currentTimeMillis();
             }
 
-            // Correct accumulated gyro drift without changing the calibrated
-            // reference. This prevents a sharp turn from permanently moving
-            // the steering center.
-            if(gyroReferenceValid && view!=null && view.mode==0){
-                float absoluteAngle=normalizeDegrees(currentZ-gyroReferenceZ);
-                float error=normalizeDegrees(absoluteAngle-gyroAngle);
-                gyroCorrection += error*0.08f;
-                gyroCorrection *= 0.94f;
-                gyroAngle += gyroCorrection;
-                float half=view.rangeDeg/2f;
-                gyroAngle=clamp(gyroAngle,-half,half);
+            // Rotation-vector data is NOT used as the steering signal.
+            // It is only used after the phone has been still for a moment and
+            // is physically close to the original calibrated orientation.
+            if (gyroReferenceValid && view != null && view.mode == 0 &&
+                gyroStillSinceMs != 0L &&
+                System.currentTimeMillis() - gyroStillSinceMs > 300L) {
+
+                float currentZ = (float)Math.toDegrees(o[2]);
+                float fromReference = normalizeDegrees(currentZ - gyroReferenceZ);
+
+                // Only correct when the physical phone is genuinely close to
+                // the calibrated center. A sharp turn is therefore untouched.
+                if (Math.abs(fromReference) < 7f) {
+                    // Pull accumulated drift toward the real physical center
+                    // slowly, avoiding visible wobble.
+                    gyroAngle *= 0.92f;
+
+                    if (Math.abs(gyroAngle) < 0.35f)
+                        gyroAngle = 0f;
+                }
             }
         }
+
         if (view != null) view.invalidate();
+    }
+
+    float normalizeDegrees(float d) {
+        while (d > 180f) d -= 360f;
+        while (d < -180f) d += 360f;
+        return d;
     }
 
     @Override public void onAccuracyChanged(Sensor s, int a) {}
@@ -151,25 +185,23 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     void calibrate() {
-        // The next rotation-vector sample records the current physical phone
-        // orientation as the fixed steering center.
-        pendingGyroCalibration=true;
-        gyroAngle=0f;
-        gyroBias=0f;
-        gyroCorrection=0f;
-        lastGyroNs=0;
-        view.wheelAngleDeg=0f;
-        view.steer=0f;
+        gyroAngle = 0f;
+        gyroBias = 0f;
+        lastGyroNs = 0;
+        lastGyroRateDeg = 0f;
+        gyroStillSinceMs = System.currentTimeMillis();
+
+        // The next rotation-vector sample records the physical orientation
+        // as the fixed center. Normal driving never changes this reference.
+        gyroReferenceValid = false;
+        calibrationPending = true;
+
+        view.wheelAngleDeg = 0f;
+        view.steer = 0f;
         view.invalidate();
     }
 
     static float clamp(float v, float a, float b) { return Math.max(a, Math.min(b, v)); }
-
-    float normalizeDegrees(float d){
-        while(d>180f)d-=360f;
-        while(d<-180f)d+=360f;
-        return d;
-    }
 
     class ControllerView extends View {
         final Paint p = new Paint(3);
@@ -695,7 +727,9 @@ public class MainActivity extends Activity implements SensorEventListener {
                         cameraDy += ny-cameraLastY;
                     }
                     if(Math.abs(nx-cameraTapStartX)>10f ||
-                       Math.abs(ny-cameraTapStartY)>10f) cameraMoved=true;
+                       Math.abs(ny-cameraTapStartY)>10f) {
+                        cameraMoved=true;
+                    }
                     cameraLastX=nx; cameraLastY=ny;
                 }
                 return true;
@@ -715,8 +749,10 @@ public class MainActivity extends Activity implements SensorEventListener {
                 if(pointerId==cameraPointerId){
                     long duration=System.currentTimeMillis()-cameraTapStartMs;
                     if(action!=MotionEvent.ACTION_CANCEL &&
-                       !cameraMoved && duration<=450L){
-                        synchronized(cameraSync){ cameraClickPending=true; }
+                       !cameraMoved && duration<=450L) {
+                        synchronized(cameraSync) {
+                            cameraClickPending=true;
+                        }
                     }
                     cameraPointerId=-1;
                     cameraDragging=false;
