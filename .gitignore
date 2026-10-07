@@ -1,0 +1,16 @@
+# Android
+.gradle/
+**/build/
+local.properties
+*.iml
+
+# IntelliJ
+.idea/
+
+# Windows/.NET
+**/bin/
+**/obj/
+
+# OS
+.DS_Store
+Thumbs.db
