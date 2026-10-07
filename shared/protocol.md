@@ -1,4 +1,4 @@
-# TruckTilt UDP Protocol v0.4
+# TruckTilt UDP Protocol v0.7
 
 Port: `45454`
 
@@ -6,11 +6,11 @@ Port: `45454`
 
 Phone broadcasts:
 
-`DISCOVER|TruckTilt|0.4`
+`DISCOVER|TruckTilt|0.7`
 
 Windows replies:
 
-`HELLO|TruckTilt|0.4|<host-name>`
+`HELLO|TruckTilt|0.7|<host-name>`
 
 Phone then sends:
 
@@ -18,17 +18,25 @@ Phone then sends:
 
 Windows replies:
 
-`WELCOME|<host-name>`
+`WELCOME|<host-name>|0.7`
 
 ## Input
 
-Phone sends input at approximately 60 Hz:
+Phone sends at approximately 62 Hz:
 
-`INPUT|seq|timestampMs|steering|throttle|brake|clutch|left|right|lights|highBeam|hazard|horn|airHorn|wiper|engineBrake|retarder|parking|cruise|gearUp|gearDown|engine|reserved`
+`INPUT|seq|timestampMs|steering|throttle|brake|clutch|retarder|b0|b1|...|b31`
 
-All boolean values are `0` or `1`.
+There are exactly 32 independent digital button fields after the five analog axes.
 
-Steering is normalized from `-1.0` to `+1.0`.
+Analog values:
+
+- `steering`: `-1.0 .. +1.0`
+- `throttle`: `0.0 .. 1.0`
+- `brake`: `0.0 .. 1.0`
+- `clutch`: `0.0 .. 1.0`
+- `retarder`: `0.0 .. 1.0`
+
+Buttons are `0` or `1` and map one-to-one to HID button indices 1–32.
 
 ## Ping
 
@@ -40,28 +48,21 @@ Windows replies:
 
 `PONG|timestampMs`
 
-The phone calculates round-trip latency from the timestamp.
-
 ## Safety
 
-The Windows host should neutralize all inputs when no valid input packet has been received for more than 500 ms.
+The Windows host neutralizes all axes and releases all 32 buttons when no valid input packet has been received for more than 500 ms.
 
-## v0.4 goals
+## Virtual device
 
-- Fixed-rate input transmission independent of screen redraw.
-- Real ping/RTT measurement.
-- Actual input packet-rate measurement.
-- Correct field ordering between Android and Windows.
-- Virtual wheel range represented as ±450° for a 900° wheel.
+The Windows host does **not** create an Xbox/XInput controller.
 
+It creates a custom HID/DirectInput-style steering wheel:
 
-## Virtual controller v0.5
-
-Windows exposes an Xbox 360-style virtual controller through HIDMaestro:
-
-- Left Stick X: steering (-1..+1)
-- LT: brake (0..1)
-- RT: throttle (0..1)
-- A/B/X/Y/LB/RB/Back/Start/L3/R3/Guide: truck controls
-
-The virtual controller is neutralized when the phone has not sent a valid input packet for 500 ms.
+- Steering — signed 16-bit simulation-control axis
+- Throttle — 16-bit simulation-control axis
+- Brake — 16-bit simulation-control axis
+- Clutch — 16-bit simulation-control axis
+- Retarder — 16-bit slider axis
+- 32 independent buttons
+- 8-way hat
+- PID force-feedback interface

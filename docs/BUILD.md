@@ -2,40 +2,25 @@
 
 ## Android
 
-No Android Studio is required to build the APK in GitHub Actions.
+GitHub Actions is the recommended build path.
 
-1. Push this repository to GitHub.
-2. Open **Actions**.
-3. Run **Android APK**.
-4. Download the `TruckTilt-debug-apk` artifact.
+The Android workflow uses Java 17 and Gradle 8.9 and produces a debug APK.
 
-For local Android Studio development, open the `android` directory.
+No Android Studio is required for the normal GitHub build.
 
 ## Windows
 
-Install .NET 8 SDK and run:
+The Windows workflow:
 
-```powershell
-dotnet run --project windows/TruckTilt.Host/TruckTilt.Host.csproj
-```
+1. Installs .NET 10.
+2. Downloads the pinned HIDMaestro v1.11.0 release.
+3. Finds `HIDMaestro.Core.dll` recursively.
+4. Restores and builds the host.
+5. Publishes a self-contained single-file `win-x64` executable.
+6. Creates a ZIP containing the executable and instructions.
 
-The host listens on UDP port `45454`.
+Local Windows builds require `HIDMaestro.Core.dll` in:
 
-## Network
+`windows/TruckTilt.Host/third_party/HIDMaestro.Core.dll`
 
-Phone and PC must be on the same Wi-Fi network, or the phone can connect to a Windows mobile hotspot.
-
-TruckTilt controller data stays on the local network.
-
-## First test
-
-1. Start the Windows host.
-2. Start TruckTilt on the Android phone.
-3. Tap **SCAN PC**.
-4. Select the discovered host.
-5. Tap **CONNECT**.
-6. Confirm the top-right indicator shows Connected and a measured RTT.
-7. Rotate the virtual wheel or use gyro steering.
-8. Watch the Windows console for steering/control values.
-
-The current host does not yet create a virtual ETS2/ATS wheel. That is the next milestone.
+Run the host elevated because virtual HID creation requires Administrator privileges.
