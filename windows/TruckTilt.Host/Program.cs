@@ -78,6 +78,11 @@ _ = Task.Run(async () =>
             {
                 response = Encoding.UTF8.GetBytes("PONG|" + message[5..]);
             }
+            else if (message.StartsWith("CAMERA|", StringComparison.OrdinalIgnoreCase))
+            {
+                if (CameraController.TryParse(message, out var dx, out var dy))
+                    CameraController.MoveRelative(dx, dy);
+            }
             else if (message.StartsWith("INPUT|", StringComparison.OrdinalIgnoreCase))
             {
                 Interlocked.Increment(ref receivedPackets);
