@@ -207,35 +207,73 @@ public class MainActivity extends Activity implements SensorEventListener {
             button(c,"CALIBRATE",wheelCx+111,78,115,38,false);
 
             // Steering-wheel quick controls: indicators on either side, horns above.
-            drawMappedButton(c,0,wheelCx-radius*.82f,wheelCy-radius*.34f,108,44); // LEFT
-            drawMappedButton(c,1,wheelCx+radius*.82f,wheelCy-radius*.34f,108,44); // RIGHT
-            drawMappedButton(c,5,wheelCx,wheelCy-radius-34,108,44);                 // HORN
-            drawMappedButton(c,6,wheelCx,wheelCy-radius-82,108,44);                 // AIR HORN
+            // Indicators sit fully OUTSIDE the steering wheel so they remain visible
+            // and easy to tap; they are never covered by the wheel graphic.
+            // Steering-wheel quick controls: LEFT, HORN and RIGHT share one
+            // easy-to-reach horizontal row above the wheel. Air horn sits directly
+            // below the horn so the three primary controls stay visually grouped.
+            float quickY=wheelCy-radius-34f;
+            float quickW=92f;
+            float quickGap=18f;
+            // Keep LEFT, HORN and RIGHT on one row, fully inside the screen.
+            // This avoids the indicator buttons being hidden behind/off the wheel.
+            drawMappedButton(c,0,wheelCx-quickW-quickGap,quickY,quickW,44); // LEFT
+            drawMappedButton(c,5,wheelCx,quickY,quickW,44);                 // HORN
+            drawMappedButton(c,1,wheelCx+quickW+quickGap,quickY,quickW,44); // RIGHT
+            drawMappedButton(c,6,wheelCx,wheelCy-radius-82,quickW,44);      // AIR HORN
 
             drawWheel(c,wheelCx,wheelCy,radius);
 
             // -----------------------------------------------------------------
-            // CENTER: grouped controls. The four most-used wheel controls above
-            // are removed from this grid, leaving 28 controls in logical groups.
+            // CENTER: logical truck controls. Frequently used controls are
+            // grouped instead of following the raw button-number order.
             // -----------------------------------------------------------------
-            final int[] centerButtons = {
-                    3, 2, 4, 24,
-                    13, 14, 15, 17,
-                    16, 7, 8, 9,
-                    28, 29, 23, 20,
-                    21, 22, 25, 26,
-                    27, 30, 31
-            };
-
             float colW=(centerRight-centerLeft)/4f;
             float buttonW=Math.min(150,colW-10);
             float top=86f;
             float rowGap=Math.min(54f,(h*.48f-top)/7f);
-            for(int n=0;n<centerButtons.length;n++) {
-                int col=n%4, row=n/4;
+
+            // Row 1 — lighting
+            int[] lighting={3,2,4,24};
+            for(int col=0;col<4;col++) {
                 float x=centerLeft+colW*(col+.5f);
-                float y=top+rowGap*(row+.5f);
-                drawMappedButton(c,centerButtons[n],x,y,buttonW,42);
+                drawMappedButton(c,lighting[col],x,top+rowGap*.5f,buttonW,42);
+            }
+
+            // Row 2 — cruise cluster + engine. Cruise is the main button,
+            // with + and - immediately beside it.
+            int[] cruiseRow={17,13,14,15};
+            for(int col=0;col<4;col++) {
+                float x=centerLeft+colW*(col+.5f);
+                drawMappedButton(c,cruiseRow[col],x,top+rowGap*1.5f,buttonW,42);
+            }
+
+            // Row 3 — parking brake and wipers
+            int[] wiperRow={16,7,8,9};
+            for(int col=0;col<4;col++) {
+                float x=centerLeft+colW*(col+.5f);
+                drawMappedButton(c,wiperRow[col],x,top+rowGap*2.5f,buttonW,42);
+            }
+
+            // Row 4 — mirrors and camera
+            int[] viewRow={28,29,23,20};
+            for(int col=0;col<4;col++) {
+                float x=centerLeft+colW*(col+.5f);
+                drawMappedButton(c,viewRow[col],x,top+rowGap*3.5f,buttonW,42);
+            }
+
+            // Row 5 — navigation / truck utility
+            int[] utilityRow={21,22,25,26};
+            for(int col=0;col<4;col++) {
+                float x=centerLeft+colW*(col+.5f);
+                drawMappedButton(c,utilityRow[col],x,top+rowGap*4.5f,buttonW,42);
+            }
+
+            // Row 6 — remaining utility controls
+            int[] utilityRow2={27,30,31};
+            for(int col=0;col<3;col++) {
+                float x=centerLeft+colW*(col+.5f);
+                drawMappedButton(c,utilityRow2[col],x,top+rowGap*5.5f,buttonW,42);
             }
 
             // Camera touchpad occupies the lower center and remains independent
@@ -259,8 +297,8 @@ public class MainActivity extends Activity implements SensorEventListener {
 
             // Gear and engine controls are deliberately close to the pedals.
             drawMappedButton(c,18,px1,h*.60f,pw*.88f,44); // GEAR UP
-            drawMappedButton(c,19,px2,h*.60f,pw*.88f,44); // GEAR DOWN
-            drawMappedButton(c,10,px1,h*.67f,pw*.88f,44); // ENGINE BRAKE
+            drawMappedButton(c,10,px2,h*.60f,pw*.88f,44); // ENGINE BRAKE (swapped into Gear Down position)
+            drawMappedButton(c,19,px1,h*.67f,pw*.88f,44); // GEAR DOWN (swapped into Engine Brake position)
             drawMappedButton(c,11,px2,h*.67f,pw*.88f,44); // RETARDER+
             drawMappedButton(c,12,px2,h*.74f,pw*.88f,44); // RETARDER-
 
