@@ -14,24 +14,18 @@ public sealed class VirtualController : IDisposable
     public VirtualController()
     {
         Console.WriteLine("Creating HIDMaestro context...");
-
         _context = new HMContext();
 
         Console.WriteLine("Loading HIDMaestro profiles...");
-
         _context.LoadDefaultProfiles();
 
         _profile = _context.GetProfile("xbox-360-wired")
             ?? throw new InvalidOperationException(
                 "HIDMaestro Xbox 360 Wired profile is not available.");
 
-        Console.WriteLine(
-            $"Using HIDMaestro profile: {_profile.Name}");
+        Console.WriteLine($"Using HIDMaestro profile: {_profile.Name}");
 
-        // Driver installation is idempotent.
-        // The application manifest requests Administrator privileges.
         Console.WriteLine("Checking/installing HIDMaestro driver...");
-
         _context.InstallDriver();
 
         Console.WriteLine("Creating virtual Xbox 360 controller...");
@@ -42,31 +36,17 @@ public sealed class VirtualController : IDisposable
 
         Ready = true;
 
-        // Start in a completely neutral state.
-        Submit(
-            0.0,
-            0.0,
-            0.0,
-            InputButtons.None);
+        Neutral();
 
         Console.WriteLine("Virtual controller created successfully.");
     }
 
     /// <summary>
-    /// Sends TruckTilt input to the virtual Xbox controller.
+    /// Sends TruckTilt input to the virtual Xbox 360 controller.
     ///
-    /// Steering:
-    ///   -1 = full left
-    ///    0 = center
-    ///   +1 = full right
-    ///
-    /// Throttle:
-    ///    0 = released
-    ///    1 = full throttle
-    ///
-    /// Brake:
-    ///    0 = released
-    ///    1 = full brake
+    /// Steering: -1 = left, 0 = center, +1 = right
+    /// Throttle:  0 = released, 1 = full
+    /// Brake:     0 = released, 1 = full
     /// </summary>
     public void Submit(
         double steering,
@@ -77,59 +57,78 @@ public sealed class VirtualController : IDisposable
         if (!Ready)
             return;
 
-        // Clamp all incoming values.
-        steering = Math.Clamp(
-            steering,
-            -1.0,
-            1.0);
+        steering = Math.Clamp(steering, -1.0, 1.0);
+        throttle = Math.Clamp(throttle, 0.0, 1.0);
+        brake = Math.Clamp(brake, 0.0, 1.0);
 
-        throttle = Math.Clamp(
-            throttle,
-            0.0,
-            1.0);
+        // HIDMaestro normalizes centered axes to 0..1.
+        // -1 -> 0, 0 -> 0.5, +1 -> 1.
+        float steeringAxis = (float)((steering + 1.0) * 0.5);
 
-        brake = Math.Clamp(
-            brake,
-            0.0,
-            1.0);
-
-        // HIDMaestro uses normalized 0..1 axis values.
-        //
-        // Steering:
-        // -1.0 -> 0.0  (full left)
-        //  0.0 -> 0.5  (center)
-        // +1.0 -> 1.0  (full right)
-        float steeringAxis =
-            (float)((steering + 1.0) * 0.5);
-
-        // Build Xbox-style analog axes.
         var axes = HMGamepadStateHelpers.StandardAxes(
             _profile,
-
-            // Left stick X = TruckTilt steering.
             leftStickX: steeringAxis,
-
-            // Left stick Y unused.
             leftStickY: 0.5f,
-
-            // Right stick unused.
             rightStickX: 0.5f,
             rightStickY: 0.5f,
-
-            // LT = brake.
             leftTrigger: (float)brake,
-
-            // RT = throttle.
             rightTrigger: (float)throttle
         );
 
-        // Convert TruckTilt buttons to Xbox buttons.
-        HMButton xboxButtons = ToButtons(buttons);
+        HMButton xboxButtons = HMButton.None;
+
+        // ETS2/ATS-friendly layout:
+        //
+        // LB       = Left indicator
+        // RB       = Right indicator
+        // Y        = Hazard
+        // A        = Horn
+        // B        = Air horn
+        // X        = Lights
+        //
+        // D-pad UP    = High beam
+        // D-pad LEFT  = Wiper
+        // D-pad DOWN  = Engine brake
+        // D-pad RIGHT = Retarder
+        //
+        // BACK     = Parking brake
+        //
+        // Steering  = Left stick X
+        // Brake     = LT
+        // Throttle  = RT
+
+        if (Has(buttons, InputButtons.Left))
+            xboxButtons |= HMButton.LeftBumper;
+
+        if (Has(buttons, InputButtons.Right))
+            xboxButtons |= HMButton.RightBumper;
+
+        if (Has(buttons, InputButtons.Hazard))
+            xboxButtons |= HMButton.Y;
+
+        if (Has(buttons, InputButtons.Horn))
+            xboxButtons |= HMButton.A;
+
+        if (Has(buttons, InputButtons.AirHorn))
+            xboxButtons |= HMButton.B;
+
+        if (Has(buttons, InputButtons.Lights))
+            xboxButtons |= HMButton.X;
+
+        if (Has(buttons, InputButtons.ParkingBrake))
+            xboxButtons |= HMButton.Back;
+
+        // D-pad controls.
+        //
+        // Xbox D-pad is a single hat. If multiple directional commands
+        // are pressed simultaneously, we support diagonals as well.
+        HMHat hat = BuildHat(buttons);
 
         var state = new HMGamepadState
         {
             Axes = axes,
-            Buttons = xboxButtons
+            Buttons = xboxButtons,
+            Hat = hat
         };
 
         lock (_sync)
@@ -138,52 +137,40 @@ public sealed class VirtualController : IDisposable
         }
     }
 
-    /// <summary>
-    /// Converts TruckTilt button flags to HIDMaestro Xbox buttons.
-    /// </summary>
-    private static HMButton ToButtons(InputButtons buttons)
+    private static HMHat BuildHat(InputButtons buttons)
     {
-        HMButton result = HMButton.None;
+        bool up = Has(buttons, InputButtons.HighBeam);
+        bool left = Has(buttons, InputButtons.Wiper);
+        bool down = Has(buttons, InputButtons.EngineBrake);
+        bool right = Has(buttons, InputButtons.Retarder);
 
-        if (Has(buttons, InputButtons.Left))
-            result |= HMButton.A;
+        if (up && right)
+            return HMHat.NorthEast;
 
-        if (Has(buttons, InputButtons.Right))
-            result |= HMButton.B;
+        if (up && left)
+            return HMHat.NorthWest;
 
-        if (Has(buttons, InputButtons.Lights))
-            result |= HMButton.X;
+        if (down && right)
+            return HMHat.SouthEast;
 
-        if (Has(buttons, InputButtons.HighBeam))
-            result |= HMButton.Y;
+        if (down && left)
+            return HMHat.SouthWest;
 
-        if (Has(buttons, InputButtons.Hazard))
-            result |= HMButton.LeftBumper;
+        if (up)
+            return HMHat.North;
 
-        if (Has(buttons, InputButtons.Horn))
-            result |= HMButton.RightBumper;
+        if (right)
+            return HMHat.East;
 
-        if (Has(buttons, InputButtons.AirHorn))
-            result |= HMButton.Back;
+        if (down)
+            return HMHat.South;
 
-        if (Has(buttons, InputButtons.Wiper))
-            result |= HMButton.Start;
+        if (left)
+            return HMHat.West;
 
-        if (Has(buttons, InputButtons.EngineBrake))
-            result |= HMButton.LeftStick;
-
-        if (Has(buttons, InputButtons.Retarder))
-            result |= HMButton.RightStick;
-
-        if (Has(buttons, InputButtons.ParkingBrake))
-            result |= HMButton.Guide;
-
-        return result;
+        return HMHat.None;
     }
 
-    /// <summary>
-    /// Checks whether a particular TruckTilt button flag is active.
-    /// </summary>
     private static bool Has(
         InputButtons value,
         InputButtons flag)
@@ -192,26 +179,19 @@ public sealed class VirtualController : IDisposable
     }
 
     /// <summary>
-    /// Immediately releases all controller inputs.
-    /// Used when the phone disconnects or times out.
+    /// Releases every axis, trigger, button and D-pad direction.
     /// </summary>
     public void Neutral()
     {
-        if (!Ready)
+        if (!Ready && _controller == null)
             return;
 
         var axes = HMGamepadStateHelpers.StandardAxes(
             _profile,
-
-            // Steering center.
             leftStickX: 0.5f,
-
-            // Unused axes centered.
             leftStickY: 0.5f,
             rightStickX: 0.5f,
             rightStickY: 0.5f,
-
-            // Triggers released.
             leftTrigger: 0.0f,
             rightTrigger: 0.0f
         );
@@ -219,7 +199,8 @@ public sealed class VirtualController : IDisposable
         var state = new HMGamepadState
         {
             Axes = axes,
-            Buttons = HMButton.None
+            Buttons = HMButton.None,
+            Hat = HMHat.None
         };
 
         lock (_sync)
@@ -237,12 +218,11 @@ public sealed class VirtualController : IDisposable
 
         try
         {
-            // Always neutralize the controller before shutdown.
             Neutral();
         }
         catch
         {
-            // Ignore errors while shutting down.
+            // Ignore errors during shutdown.
         }
 
         try
@@ -255,11 +235,6 @@ public sealed class VirtualController : IDisposable
         }
     }
 }
-
-
-// ============================================================
-// TRUCKTILT INPUT BUTTON FLAGS
-// ============================================================
 
 [Flags]
 public enum InputButtons
