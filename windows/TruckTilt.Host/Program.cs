@@ -7,7 +7,7 @@ const int Port = 45454;
 const int TimeoutMs = 500;
 
 Console.Title = "TruckTilt Host";
-Console.WriteLine("TruckTilt Host v0.7.4.2 — ETS2 DirectInput Wheel");
+Console.WriteLine("TruckTilt Host v0.7.4.3 — ETS2 DirectInput Wheel");
 Console.WriteLine("================================================");
 Console.WriteLine($"Listening for TruckTilt phones on UDP {Port}");
 Console.WriteLine("Device: TruckTilt Virtual Steering Wheel (DirectInput/HID)");

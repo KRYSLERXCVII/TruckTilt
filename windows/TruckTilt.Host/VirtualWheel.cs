@@ -45,8 +45,8 @@ public sealed class VirtualWheel : IDisposable
             .AddStick("Left", bits: 16)
             .AddTrigger("Left", bits: 16)
             .AddTrigger("Right", bits: 16)
-            .AddAxis(HMAxis.Slider, bits: 16)
-            .AddAxis(HMAxis.Dial, bits: 16)
+            .AddTrigger("Left", bits: 16)   // 3rd trigger slot -> Slider
+            .AddTrigger("Right", bits: 16)  // 4th trigger slot -> Dial
             .AddButtons(ButtonCount)
             .AddHat(positions: 8)
             .AddPidFfbBlock();
@@ -79,10 +79,12 @@ public sealed class VirtualWheel : IDisposable
         //   X/Y       = steering stick pair
         //   Rx        = first trigger slot (our throttle)
         //   Ry        = second trigger slot (our brake)
-        //   Slider    = clutch
-        //   Dial      = retarder
-        // Do NOT write Z/Rz here: those usages are not declared by this
-        // descriptor. The joy.cpl screenshot made that mismatch visible.
+        //   Slider    = third trigger slot (our clutch)
+        //   Dial      = fourth trigger slot (our retarder)
+        // The four AddTrigger calls are intentionally used instead of AddAxis
+        // for Slider/Dial: HIDMaestro's trigger encoder resolves the complete
+        // [Rx, Ry, Slider, Dial] trigger pool and writes each declared field.
+        // This avoids the frozen Slider/Dial behaviour seen with AddAxis. The joy.cpl screenshot made that mismatch visible.
         _axes = HMGamepadStateHelpers.StandardAxes(
             _profile,
             leftStickX: 0.5f,
@@ -93,8 +95,8 @@ public sealed class VirtualWheel : IDisposable
         var triggers = _profile.Triggers;
         if (triggers.Count > 0) _axes[triggers[0].Axis] = 0f;
         if (triggers.Count > 1) _axes[triggers[1].Axis] = 0f;
-        _axes[HMAxis.Slider] = 0f;
-        _axes[HMAxis.Dial] = 0f;
+        if (triggers.Count > 2) _axes[triggers[2].Axis] = 0f;
+        if (triggers.Count > 3) _axes[triggers[3].Axis] = 0f;
 
         try
         {
@@ -138,9 +140,8 @@ public sealed class VirtualWheel : IDisposable
         var triggers = _profile.Triggers;
         if (triggers.Count > 0) _axes[triggers[0].Axis] = (float)throttle;
         if (triggers.Count > 1) _axes[triggers[1].Axis] = (float)brake;
-
-        _axes[HMAxis.Slider] = (float)clutch;
-        _axes[HMAxis.Dial] = (float)retarder;
+        if (triggers.Count > 2) _axes[triggers[2].Axis] = (float)clutch;
+        if (triggers.Count > 3) _axes[triggers[3].Axis] = (float)retarder;
 
         var state = new HMGamepadState
         {
