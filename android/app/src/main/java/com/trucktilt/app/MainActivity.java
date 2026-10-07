@@ -127,6 +127,15 @@ public class MainActivity extends Activity implements SensorEventListener {
         final HashMap<Integer,String> pointerControls = new HashMap<>();
         final boolean[] buttons = new boolean[32];
 
+        // User-editable cockpit layout. Positions/sizes are stored normalized
+        // to the screen so a layout survives different phone resolutions.
+        final android.content.SharedPreferences layoutPrefs =
+                getSharedPreferences("trucktilt_layout", MODE_PRIVATE);
+        boolean customizing = false;
+        String editKey = null;
+        boolean editResizing = false;
+        float editOffsetX = 0f, editOffsetY = 0f;
+
         float steer = 0f, throttle = 0f, brake = 0f, clutch = 0f, retarder = 0f;
         float wheelTouchStartAngle = 0f, wheelStartAngleDeg = 0f, wheelAngleDeg = 0f;
         float wheelLastAngle = 0f;
@@ -212,6 +221,9 @@ public class MainActivity extends Activity implements SensorEventListener {
             button(c,"MODE",wheelCx-88,78,105,38,false);
             button(c,rangeDeg+"°",wheelCx+20,78,88,38,false);
             button(c,"CALIBRATE",wheelCx+111,78,115,38,false);
+            button(c,"CUSTOMIZE",wheelCx+215,78,135,38,customizing);
+            if(customizing)
+                button(c,"RESET LAYOUT",wheelCx+215,124,135,34,false);
 
             // Steering-wheel quick controls: indicators on either side, horns above.
             // Indicators sit fully OUTSIDE the steering wheel so they remain visible
@@ -320,6 +332,9 @@ public class MainActivity extends Activity implements SensorEventListener {
             text(c,String.format(Locale.US,"%+.0f° / %d°",currentSteeringDegrees(),rangeDeg),
                     wheelCx,wheelCy+36,15,Color.rgb(139,195,74),Paint.Align.CENTER);
 
+            if(customizing)
+                drawCustomizeOverlay(c);
+
             if(net.lastSendError!=null)
                 text(c,"TX ERROR: "+net.lastSendError,w-18,55,10,Color.rgb(255,100,100),Paint.Align.RIGHT);
         }
@@ -346,7 +361,8 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         void drawCameraPad(Canvas c,float left,float top,float right,float bottom) {
             RectF r=new RectF(left,top,right,bottom);
-            controls.put("CAMERA_PAD",r);
+            r=customRect("CAMERA_PAD",r);
+            controls.put("CAMERA_PAD",new RectF(r));
 
             p.setStyle(Paint.Style.FILL);
             p.setColor(Color.rgb(18,23,28));
@@ -364,7 +380,8 @@ public class MainActivity extends Activity implements SensorEventListener {
         void drawMappedButton(Canvas c,int index,float cx,float cy,float bw,float bh) {
             boolean active=buttons[index];
             RectF r=new RectF(cx-bw/2,cy-bh/2,cx+bw/2,cy+bh/2);
-            controls.put("B"+index,r);
+            r=customRect("B"+index,r);
+            controls.put("B"+index,new RectF(r));
             p.setStyle(Paint.Style.FILL);
             p.setColor(active?Color.rgb(139,195,74):Color.rgb(27,32,37));
             c.drawRoundRect(r,9,9,p);
@@ -382,7 +399,8 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         void drawProgressivePedal(Canvas c,String label,float cx,float cy,float bw,float bh,float value) {
             RectF r=new RectF(cx-bw/2,cy-bh/2,cx+bw/2,cy+bh/2);
-            controls.put("P_"+label,r);
+            r=customRect("P_"+label,r);
+            controls.put("P_"+label,new RectF(r));
 
             p.setStyle(Paint.Style.FILL);
             p.setColor(Color.rgb(24,29,34));
@@ -411,7 +429,8 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         void drawPedal(Canvas c,String label,float cx,float cy,float bw,float bh,float value) {
             RectF r=new RectF(cx-bw/2,cy-bh/2,cx+bw/2,cy+bh/2);
-            controls.put("P_"+label,r);
+            r=customRect("P_"+label,r);
+            controls.put("P_"+label,new RectF(r));
             p.setStyle(Paint.Style.FILL); p.setColor(Color.rgb(24,29,34)); c.drawRoundRect(r,10,10,p);
             if(value>0.001f){
                 p.setColor(Color.rgb(139,195,74));
@@ -427,6 +446,34 @@ public class MainActivity extends Activity implements SensorEventListener {
             final float x=e.getX(actionIndex), y=e.getY(actionIndex);
 
             if(action==MotionEvent.ACTION_DOWN || action==MotionEvent.ACTION_POINTER_DOWN) {
+                if(hit("CUSTOMIZE",x,y)){
+                    customizing=!customizing;
+                    editKey=null; editResizing=false;
+                    invalidate(); return true;
+                }
+                if(customizing) {
+                    if(hit("RESET LAYOUT",x,y)){
+                        resetLayout();
+                        return true;
+                    }
+                    if(action==MotionEvent.ACTION_POINTER_DOWN) return true;
+
+                    String k=findEditableKey(x,y);
+                    if(k!=null){
+                        editKey=k;
+                        RectF r=controls.get(k);
+                        editResizing=isResizeHandle(r,x,y);
+                        editOffsetX=x-r.centerX();
+                        editOffsetY=y-r.centerY();
+                        invalidate();
+                    } else {
+                        editKey=null;
+                        editResizing=false;
+                        invalidate();
+                    }
+                    return true;
+                }
+
                 if(hit("MODE",x,y)){ mode=(mode+1)%3; invalidate(); return true; }
                 if(hit(rangeDeg+"°",x,y)){ cycleRange(); invalidate(); return true; }
                 if(hit("CALIBRATE",x,y)){ calibrate(); return true; }
@@ -460,6 +507,38 @@ public class MainActivity extends Activity implements SensorEventListener {
 
                 for(int i=0;i<32;i++) {
                     if(hit("B"+i,x,y)) { buttons[i]=true; pointerControls.put(pointerId,"B"+i); invalidate(); return true; }
+                }
+                return true;
+            }
+
+            if(customizing) {
+                if(action==MotionEvent.ACTION_MOVE && editKey!=null) {
+                    RectF r=controls.get(editKey);
+                    if(r!=null) {
+                        if(editResizing){
+                            float minW=70f, minH=42f;
+                            r.right=Math.max(r.left+minW,x);
+                            r.bottom=Math.max(r.top+minH,y);
+                            r.right=Math.min(getWidth()-8f,r.right);
+                            r.bottom=Math.min(getHeight()-8f,r.bottom);
+                        } else {
+                            float dx=x-r.centerX()-editOffsetX;
+                            float dy=y-r.centerY()-editOffsetY;
+                            float nx=r.left+dx, ny=r.top+dy;
+                            float maxX=getWidth()-r.width()-8f;
+                            float maxY=getHeight()-r.height()-8f;
+                            nx=clamp(nx,8f,Math.max(8f,maxX));
+                            ny=clamp(ny,62f,Math.max(62f,maxY));
+                            r.offsetTo(nx,ny);
+                        }
+                        invalidate();
+                    }
+                    return true;
+                }
+                if(action==MotionEvent.ACTION_UP || action==MotionEvent.ACTION_CANCEL) {
+                    if(editKey!=null) saveCustomRect(editKey,controls.get(editKey));
+                    editResizing=false;
+                    return true;
                 }
                 return true;
             }
@@ -532,6 +611,84 @@ public class MainActivity extends Activity implements SensorEventListener {
                 invalidate(); return true;
             }
             return true;
+        }
+
+        boolean isEditableKey(String key) {
+            return key != null && (key.startsWith("B") || key.startsWith("P_") || "CAMERA_PAD".equals(key));
+        }
+
+        String findEditableKey(float x,float y) {
+            // Buttons first: they are the primary customizable controls.
+            for(int i=0;i<32;i++) {
+                RectF r=controls.get("B"+i);
+                if(r!=null && r.contains(x,y)) return "B"+i;
+            }
+            for(String s:new String[]{"THROTTLE","BRAKE","CLUTCH","RETARDER"}) {
+                RectF r=controls.get("P_"+s);
+                if(r!=null && r.contains(x,y)) return "P_"+s;
+            }
+            RectF cam=controls.get("CAMERA_PAD");
+            if(cam!=null && cam.contains(x,y)) return "CAMERA_PAD";
+            return null;
+        }
+
+        boolean isResizeHandle(RectF r,float x,float y) {
+            return r!=null && x>=r.right-32f && y>=r.bottom-32f;
+        }
+
+        RectF customRect(String key,RectF def) {
+            if(!layoutPrefs.contains(key+"_cx")) return def;
+            float cx=layoutPrefs.getFloat(key+"_cx",def.centerX()/Math.max(1,getWidth()))*getWidth();
+            float cy=layoutPrefs.getFloat(key+"_cy",def.centerY()/Math.max(1,getHeight()))*getHeight();
+            float bw=layoutPrefs.getFloat(key+"_w",def.width()/Math.max(1,getWidth()))*getWidth();
+            float bh=layoutPrefs.getFloat(key+"_h",def.height()/Math.max(1,getHeight()))*getHeight();
+            bw=Math.max(40f,bw); bh=Math.max(32f,bh);
+            cx=clamp(cx,bw/2f,getWidth()-bw/2f);
+            cy=clamp(cy,62f+bh/2f,getHeight()-bh/2f);
+            return new RectF(cx-bw/2f,cy-bh/2f,cx+bw/2f,cy+bh/2f);
+        }
+
+        void saveCustomRect(String key,RectF r) {
+            if(r==null || getWidth()<=0 || getHeight()<=0) return;
+            layoutPrefs.edit()
+                    .putFloat(key+"_cx",r.centerX()/getWidth())
+                    .putFloat(key+"_cy",r.centerY()/getHeight())
+                    .putFloat(key+"_w",r.width()/getWidth())
+                    .putFloat(key+"_h",r.height()/getHeight())
+                    .apply();
+        }
+
+        void resetLayout() {
+            layoutPrefs.edit().clear().apply();
+            editKey=null;
+            editResizing=false;
+            invalidate();
+        }
+
+        void drawCustomizeOverlay(Canvas c) {
+            // Editor hint bar.
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(Color.argb(225,18,23,28));
+            c.drawRoundRect(new RectF(getWidth()/2f-250,getHeight()-58,
+                    getWidth()/2f+250,getHeight()-12),12,12,p);
+            text(c,"CUSTOMIZE • DRAG TO MOVE • BOTTOM-RIGHT CORNER TO RESIZE • DONE TO LOCK",
+                    getWidth()/2f,getHeight()-30,11,Color.WHITE,Paint.Align.CENTER);
+
+            if(editKey!=null) {
+                RectF r=controls.get(editKey);
+                if(r!=null) {
+                    stroke.setStyle(Paint.Style.STROKE);
+                    stroke.setStrokeWidth(3);
+                    stroke.setColor(Color.rgb(139,195,74));
+                    c.drawRoundRect(r,10,10,stroke);
+                    p.setStyle(Paint.Style.FILL);
+                    p.setColor(Color.rgb(139,195,74));
+                    c.drawCircle(r.right-12,r.bottom-12,9,p);
+                    text(c,editKey.startsWith("B") ?
+                            buttonNames[Integer.parseInt(editKey.substring(1))] : editKey,
+                            r.centerX(),Math.max(18,r.top-8),10,Color.rgb(139,195,74),Paint.Align.CENTER);
+                }
+            }
         }
 
         void startWheelReturn(){
