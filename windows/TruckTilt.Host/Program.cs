@@ -1,4 +1,3 @@
-using System.Net;
 using System.Net.Sockets;
 using System.Text;
 
@@ -16,7 +15,7 @@ Console.WriteLine("Keep this window running while using ETS2 / ATS.");
 Console.WriteLine("Press Ctrl+C to exit.");
 Console.WriteLine();
 
-var state = new InputState();
+var state = InputState.Neutral;
 var lastPacket = DateTime.UtcNow;
 var sync = new object();
 
@@ -28,39 +27,37 @@ _ = Task.Run(async () =>
         {
             var result = await udp.ReceiveAsync();
             var message = Encoding.UTF8.GetString(result.Buffer);
+            byte[]? response = null;
 
-            lock (sync)
+            if (message.StartsWith("DISCOVER|TruckTilt|", StringComparison.OrdinalIgnoreCase))
             {
-                if (message.StartsWith("DISCOVER|TruckTilt|", StringComparison.OrdinalIgnoreCase))
-                {
-                    var hello = $"HELLO|TruckTilt|0.3|{Environment.MachineName}";
-                    var bytes = Encoding.UTF8.GetBytes(hello);
-                    await udp.SendAsync(bytes, bytes.Length, result.RemoteEndPoint);
-                }
-                else if (message.StartsWith("CONNECT|", StringComparison.OrdinalIgnoreCase))
-                {
-                    var welcome = $"WELCOME|{Environment.MachineName}";
-                    var bytes = Encoding.UTF8.GetBytes(welcome);
-                    await udp.SendAsync(bytes, bytes.Length, result.RemoteEndPoint);
-                }
-                else if (message.StartsWith("PING|", StringComparison.OrdinalIgnoreCase))
-                {
-                    var pong = Encoding.UTF8.GetBytes("PONG|" + message[5..]);
-                    await udp.SendAsync(pong, pong.Length, result.RemoteEndPoint);
-                }
-                else if (message.StartsWith("INPUT|"))
-                {
-                    if (InputState.TryParse(message, out var parsed))
-                    {
-                        state = parsed;
-                        lastPacket = DateTime.UtcNow;
-                        Console.WriteLine(
-                            $"STEER {state.Steering,7:0.000}  THR {state.Throttle,5:0.00}  " +
-                            $"BRK {state.Brake,5:0.00}  HORN {(state.Horn ? "ON " : "OFF")}  " +
-                            $"HAZ {(state.Hazard ? "ON " : "OFF")}");
-                    }
-                }
+                response = Encoding.UTF8.GetBytes($"HELLO|TruckTilt|0.3.1|{Environment.MachineName}");
             }
+            else if (message.StartsWith("CONNECT|", StringComparison.OrdinalIgnoreCase))
+            {
+                response = Encoding.UTF8.GetBytes($"WELCOME|{Environment.MachineName}");
+            }
+            else if (message.StartsWith("PING|", StringComparison.OrdinalIgnoreCase))
+            {
+                response = Encoding.UTF8.GetBytes("PONG|" + message[5..]);
+            }
+            else if (message.StartsWith("INPUT|", StringComparison.OrdinalIgnoreCase) &&
+                     InputState.TryParse(message, out var parsed))
+            {
+                lock (sync)
+                {
+                    state = parsed;
+                    lastPacket = DateTime.UtcNow;
+                }
+
+                Console.WriteLine(
+                    $"STEER {parsed.Steering,7:0.000}  THR {parsed.Throttle,5:0.00}  " +
+                    $"BRK {parsed.Brake,5:0.00}  HORN {(parsed.Horn ? "ON " : "OFF")}  " +
+                    $"HAZ {(parsed.Hazard ? "ON " : "OFF")}");
+            }
+
+            if (response is not null)
+                await udp.SendAsync(response, response.Length, result.RemoteEndPoint);
         }
         catch (ObjectDisposedException)
         {
@@ -80,38 +77,19 @@ while (true)
     lock (sync)
     {
         if ((DateTime.UtcNow - lastPacket).TotalMilliseconds > TimeoutMs)
-        {
             state = InputState.Neutral;
-        }
     }
 }
 
 sealed record InputState(
-    long Sequence,
-    long TimestampMs,
-    double Steering,
-    double Throttle,
-    double Brake,
-    bool Left,
-    bool Right,
-    bool Lights,
-    bool HighBeam,
-    bool Hazard,
-    bool Horn,
-    bool AirHorn,
-    bool Wiper,
-    bool EngineBrake,
-    bool Retarder,
-    bool ParkingBrake,
-    bool Cruise,
-    bool GearUp,
-    bool GearDown,
-    bool EngineStart)
+    long Sequence, long TimestampMs, double Steering, double Throttle, double Brake,
+    bool Left, bool Right, bool Lights, bool HighBeam, bool Hazard, bool Horn,
+    bool AirHorn, bool Wiper, bool EngineBrake, bool Retarder, bool ParkingBrake,
+    bool Cruise, bool GearUp, bool GearDown, bool EngineStart)
 {
     public static readonly InputState Neutral = new(
         0, 0, 0, 0, 0, false, false, false, false, false,
-        false, false, false, false, false, false, false, false,
-        false, false);
+        false, false, false, false, false, false, false, false, false, false);
 
     public static bool TryParse(string packet, out InputState state)
     {
@@ -122,8 +100,7 @@ sealed record InputState(
             if (p.Length < 21) return false;
 
             state = new InputState(
-                long.Parse(p[1]),
-                long.Parse(p[2]),
+                long.Parse(p[1]), long.Parse(p[2]),
                 double.Parse(p[3], System.Globalization.CultureInfo.InvariantCulture),
                 double.Parse(p[4], System.Globalization.CultureInfo.InvariantCulture),
                 double.Parse(p[5], System.Globalization.CultureInfo.InvariantCulture),
@@ -133,9 +110,6 @@ sealed record InputState(
                 p[18] == "1", p[19] == "1", p[20] == "1");
             return true;
         }
-        catch
-        {
-            return false;
-        }
+        catch { return false; }
     }
 }
