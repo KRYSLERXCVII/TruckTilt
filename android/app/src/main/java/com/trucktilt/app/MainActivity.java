@@ -230,7 +230,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                 referenceReady = true;
                 lastReferenceNs = e.timestamp;
             } else {
-                float delta = normalizeDelta(rawReference - referenceRaw);
+                float delta = MainActivity.normalizeDelta(rawReference - referenceRaw);
                 // Same steering sign convention as the gyro.
                 referenceAngle -= delta;
                 referenceRaw = rawReference;
@@ -389,6 +389,14 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     static float clamp(float v, float a, float b) { return Math.max(a, Math.min(b, v)); }
+    // Normalize an angular delta to the shortest signed path. This helper is
+    // defined on MainActivity because the sensor callback runs outside
+    // ControllerView; ControllerView has its own equivalent helper for touch input.
+    static float normalizeDelta(float d) {
+        while (d > 180f) d -= 360f;
+        while (d < -180f) d += 360f;
+        return d;
+    }
 
     class ControllerView extends View {
         final Paint p = new Paint(3);
