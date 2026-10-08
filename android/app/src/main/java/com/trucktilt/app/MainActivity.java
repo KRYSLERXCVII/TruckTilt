@@ -59,6 +59,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     volatile boolean hapticsEnabled;
     Vibrator vibrator;
     boolean offRoadRumbleActive = false;
+    int adaptiveRumbleIntensity = -1;
 
     final ScheduledExecutorService networkExecutor =
             Executors.newScheduledThreadPool(2);
@@ -172,25 +173,43 @@ public class MainActivity extends Activity implements SensorEventListener {
         runOnUiThread(() -> {
             if (!hapticsEnabled || vibrator == null || !vibrator.hasVibrator()) return;
             try {
+                if (type.startsWith("RUMBLE|")) {
+                    int intensity = 0;
+                    try { intensity = Integer.parseInt(type.substring(7).trim()); }
+                    catch (Exception ignored) { }
+                    startAdaptiveRumble(Math.max(1, Math.min(100, intensity)));
+                    return;
+                }
+
                 switch (type) {
                     case "SHIFT":
-                        vibrateOneShot(32, 85);
+                    case "SHIFT_HINT":
+                        vibrateWaveform(
+                                new long[]{0, 22, 35, 34},
+                                new int[]{0, 95, 0, 75}, -1);
+                        break;
+                    case "SHIFT_UP":
+                        vibrateWaveform(
+                                new long[]{0, 28, 32, 42},
+                                new int[]{0, 105, 0, 80}, -1);
+                        break;
+                    case "SHIFT_DOWN":
+                        vibrateWaveform(
+                                new long[]{0, 42, 32, 28},
+                                new int[]{0, 90, 0, 70}, -1);
                         break;
                     case "ENGINE_START":
                         vibrateWaveform(
-                                new long[]{0, 55, 35, 95, 55},
-                                new int[]{0, 55, 95, 55, 0}, -1);
+                                new long[]{0, 45, 25, 65, 35, 105, 55},
+                                new int[]{0, 40, 60, 105, 75, 55, 0}, -1);
                         break;
                     case "ENGINE_STOP":
                         vibrateWaveform(
-                                new long[]{0, 80, 45, 55, 65},
-                                new int[]{0, 70, 45, 25, 0}, -1);
-                        break;
-                    case "RUMBLE_START":
-                        startOffRoadRumble();
+                                new long[]{0, 85, 40, 65, 60, 35},
+                                new int[]{0, 90, 70, 48, 25, 0}, -1);
                         break;
                     case "RUMBLE_STOP":
-                        stopOffRoadRumble();
+                        stopAdaptiveRumble();
                         break;
                     default:
                         break;
@@ -220,22 +239,31 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
     }
 
-    void startOffRoadRumble() {
-        if (offRoadRumbleActive || vibrator == null || !vibrator.hasVibrator()) return;
+    void startAdaptiveRumble(int intensity) {
+        if (vibrator == null || !vibrator.hasVibrator()) return;
+        if (adaptiveRumbleIntensity == intensity && offRoadRumbleActive) return;
+        adaptiveRumbleIntensity = intensity;
         offRoadRumbleActive = true;
-        // Soft repeating cabin/road rumble. The repeat begins after the short
-        // fade-in so it does not feel like repeated notification pulses.
+
+        int a1 = Math.max(8, Math.min(180, 35 + intensity * 2));
+        int a2 = Math.max(6, Math.min(150, 20 + intensity));
+        int a3 = Math.max(8, Math.min(165, 28 + (int)(intensity * 1.45f)));
         vibrateWaveform(
-                new long[]{0, 250, 250, 200},
-                new int[]{0, 42, 30, 36}, 1);
+                new long[]{0, 150, 75, 115, 65},
+                new int[]{0, a1, a2, a3, 0}, 0);
     }
 
-    void stopOffRoadRumble() {
+    void stopAdaptiveRumble() {
+        adaptiveRumbleIntensity = -1;
         offRoadRumbleActive = false;
         if (vibrator != null) {
             try { vibrator.cancel(); } catch (Throwable ignored) {}
         }
     }
+
+    void startOffRoadRumble() { startAdaptiveRumble(55); }
+
+    void stopOffRoadRumble() { stopAdaptiveRumble(); }
 
     int getBatteryPercent() {
         return batteryPercent;
@@ -355,7 +383,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                 // Keep the battery percentage clear of the DONATE button.
                 text(c, "BAT " + battery + "%", w - 305, 36, 13, batteryColor, Paint.Align.RIGHT);
             }
-            text(c,"by KRYSLERXCVII  •  v0.12.6",136,37,15,Color.rgb(205,212,220),Paint.Align.LEFT);
+            text(c,"by KRYSLERXCVII  •  v0.14.0",136,37,15,Color.rgb(205,212,220),Paint.Align.LEFT);
 
             // Prominent support button: red only for the donation CTA so it is
             // immediately discoverable without overpowering the cockpit.

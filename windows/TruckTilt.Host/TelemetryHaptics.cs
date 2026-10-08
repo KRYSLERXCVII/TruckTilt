@@ -36,6 +36,8 @@ internal sealed class TelemetryHaptics : IDisposable
     private bool _shiftLatched;
     private int _lastGear = int.MinValue;
     private bool _offRoadLatched;
+    private int _lastRumbleIntensity = -1;
+    private DateTime _lastRumbleSend = DateTime.MinValue;
     private bool _engineStateKnown;
     private bool _lastEngineEnabled;
     private bool _mapStatusLogged;
@@ -128,8 +130,8 @@ internal sealed class TelemetryHaptics : IDisposable
         float rpmMax = ReadFloat(EngineRpmMaxOffset);
         bool engineEnabled = ReadByte(EngineEnabledOffset) != 0;
 
-        // Engine start/stop: initialize silently so connecting to a running
-        // truck does not create a false "engine start" vibration.
+        // Engine start/stop. The initial state is silent so connecting to a
+        // running truck does not create a false start vibration.
         if (!_engineStateKnown)
         {
             _engineStateKnown = true;
@@ -141,21 +143,25 @@ internal sealed class TelemetryHaptics : IDisposable
             _sendHaptic(engineEnabled ? "HAPTIC|ENGINE_START" : "HAPTIC|ENGINE_STOP");
         }
 
+        // Gear change: a mechanical double pulse.
         if (gear != _lastGear)
         {
+            if (_lastGear != int.MinValue && engineEnabled)
+                _sendHaptic(gear > _lastGear ? "HAPTIC|SHIFT_UP" : "HAPTIC|SHIFT_DOWN");
+
             _lastGear = gear;
             _shiftLatched = false;
         }
 
-        // Small shift reminder only when another forward gear exists.
-        // Highest forward gear is intentionally silent.
+        // Shift reminder only when another forward gear exists. Highest gear
+        // stays silent, as requested.
         if (gears > 0 && gear > 0 && gear < gears && rpmMax > 100f)
         {
-            float ratio = rpm / rpmMax;
+            float ratio = Math.Clamp(rpm / rpmMax, 0f, 1.5f);
             if (!_shiftLatched && ratio >= 0.86f)
             {
                 _shiftLatched = true;
-                _sendHaptic("HAPTIC|SHIFT");
+                _sendHaptic("HAPTIC|SHIFT_HINT");
             }
             else if (ratio <= 0.78f)
             {
@@ -167,24 +173,55 @@ internal sealed class TelemetryHaptics : IDisposable
             _shiftLatched = false;
         }
 
-        bool offRoad = IsPoweredWheelOffRoad();
-        if (offRoad && !_offRoadLatched)
+        // Combine engine/drivetrain and road-surface rumble into one adaptive
+        // intensity so the phone never receives competing rumble commands.
+        int rumbleIntensity = 0;
+        if (engineEnabled && rpmMax > 100f)
         {
-            _offRoadLatched = true;
-            _sendHaptic("HAPTIC|RUMBLE_START");
+            float rpmRatio = Math.Clamp(rpm / rpmMax, 0f, 1f);
+            rumbleIntensity = rpmRatio < 0.18f
+                ? 0
+                : (int)Math.Clamp(18f + rpmRatio * 42f, 18f, 60f);
         }
-        else if (!offRoad && _offRoadLatched)
-        {
-            _offRoadLatched = false;
-            _sendHaptic("HAPTIC|RUMBLE_STOP");
-        }
+
+        int offRoadIntensity = GetPoweredWheelSurfaceIntensity();
+        _offRoadLatched = offRoadIntensity > 0;
+        rumbleIntensity = Math.Max(rumbleIntensity, offRoadIntensity);
+
+        if (rumbleIntensity > 0)
+            SendRumbleIfChanged(rumbleIntensity, 100);
+        else
+            SendRumbleStop();
     }
 
-    private bool IsPoweredWheelOffRoad()
+    private void SendRumbleIfChanged(int intensity, int minIntervalMs)
     {
-        int wheelCount = (int)Math.Min(16u, ReadUInt32(80)); // config_ui.truckWheelCount
+        intensity = Math.Clamp(intensity, 0, 100);
+        var now = DateTime.UtcNow;
+        if (intensity == _lastRumbleIntensity) return;
+        if (_lastRumbleIntensity >= 0 &&
+            (now - _lastRumbleSend).TotalMilliseconds < minIntervalMs) return;
+
+        _lastRumbleIntensity = intensity;
+        _lastRumbleSend = now;
+        if (intensity <= 0) _sendHaptic("HAPTIC|RUMBLE_STOP");
+        else _sendHaptic($"HAPTIC|RUMBLE|{intensity}");
+    }
+
+    private void SendRumbleStop()
+    {
+        if (_lastRumbleIntensity == -1) return;
+        _lastRumbleIntensity = -1;
+        _lastRumbleSend = DateTime.UtcNow;
+        _sendHaptic("HAPTIC|RUMBLE_STOP");
+    }
+
+    private int GetPoweredWheelSurfaceIntensity()
+    {
+        int wheelCount = (int)Math.Min(16u, ReadUInt32(80));
         if (wheelCount <= 0) wheelCount = 16;
 
+        int strongest = 0;
         for (int i = 0; i < wheelCount; i++)
         {
             bool powered = ReadByte(PoweredWheelsOffset + i) != 0;
@@ -197,10 +234,24 @@ internal sealed class TelemetryHaptics : IDisposable
             if (substance >= 25) continue;
 
             string name = ReadString(SubstanceNamesOffset + checked((int)substance * SubstanceNameSize));
-            if (!IsRoadSurface(name)) return true;
+            int intensity = SurfaceIntensity(name);
+            if (intensity > strongest) strongest = intensity;
         }
 
-        return false;
+        return strongest;
+    }
+
+    private static int SurfaceIntensity(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return 0;
+        string n = name.Trim().ToLowerInvariant();
+
+        if (IsRoadSurface(n)) return 0;
+        if (n.Contains("gravel") || n.Contains("cobble") || n.Contains("stone")) return 62;
+        if (n.Contains("dirt") || n.Contains("mud") || n.Contains("sand")) return 78;
+        if (n.Contains("grass") || n.Contains("ground") || n.Contains("field")) return 70;
+        if (n.Contains("snow") || n.Contains("ice")) return 52;
+        return 48;
     }
 
     private static bool IsRoadSurface(string name)
@@ -229,8 +280,8 @@ internal sealed class TelemetryHaptics : IDisposable
 
     private void ResetState(bool sendRumbleStop)
     {
-        if (sendRumbleStop && _offRoadLatched)
-            _sendHaptic("HAPTIC|RUMBLE_STOP");
+        if (sendRumbleStop)
+            SendRumbleStop();
 
         _shiftLatched = false;
         _offRoadLatched = false;
@@ -253,10 +304,7 @@ internal sealed class TelemetryHaptics : IDisposable
     {
         _cts.Cancel();
         try { _loop?.Wait(500); } catch { }
-        if (_offRoadLatched)
-        {
-            try { _sendHaptic("HAPTIC|RUMBLE_STOP"); } catch { }
-        }
+        try { SendRumbleStop(); } catch { }
         CloseMap();
         _cts.Dispose();
     }
