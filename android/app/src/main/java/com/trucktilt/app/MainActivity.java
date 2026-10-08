@@ -954,10 +954,17 @@ public class MainActivity extends Activity implements SensorEventListener {
                     } else if(s.startsWith("HAPTIC|")){
                         // Windows telemetry sends asynchronous haptic events to the
                         // phone over the same UDP connection used for controller data.
-                        try {
-                            int type = Integer.parseInt(s.substring(7).trim());
-                            postHaptic(type);
-                        } catch(Exception ignored) {}
+                        String payload = s.substring(7).trim();
+                        if ("TEST".equalsIgnoreCase(payload)) {
+                            System.out.println("HAPTIC RX: TEST");
+                            postHaptic(1);
+                        } else {
+                            try {
+                                int type = Integer.parseInt(payload);
+                                System.out.println("HAPTIC RX: " + type);
+                                postHaptic(type);
+                            } catch(Exception ignored) {}
+                        }
                     } else if(s.startsWith("PONG|")){
                         try{ long sent=Long.parseLong(s.substring(5).trim()); rttMs=(int)Math.max(0,System.currentTimeMillis()-sent); }
                         catch(Exception ignored){}
