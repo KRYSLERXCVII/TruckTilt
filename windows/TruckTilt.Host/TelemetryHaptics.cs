@@ -6,7 +6,7 @@ namespace TruckTilt.Host;
 /// <summary>
 /// Optional ETS2/ATS telemetry reader for TruckTilt haptics.
 /// Uses the Rev. 12 SCSTelemetry shared-memory layout.
-/// No console spam: haptic events are sent silently to the connected phone.
+/// Uses the Rev. 12 layout exactly; haptic events are sent silently to the connected phone.
 /// </summary>
 internal sealed class TelemetryHaptics : IDisposable
 {
@@ -14,12 +14,12 @@ internal sealed class TelemetryHaptics : IDisposable
 
     // Rev. 12 shared-memory offsets from scs-telemetry-common.hpp.
     private const int SdkActiveOffset = 0;
-    private const int GearsOffset = 44;             // config_ui.gears
-    private const int GearOffset = 504;             // truck_i.gear
+    private const int GearsOffset = 68;             // config_ui.gears
+    private const int GearOffset = 500;             // truck_i.gear
     private const int EngineRpmMaxOffset = 740;     // config_f.engineRpmMax
-    private const int EngineRpmOffset = 952;        // truck_f.engineRpm
+    private const int EngineRpmOffset = 948;        // truck_f.engineRpm
     private const int WheelSubstanceOffset = 96;    // truck_ui.truck_wheelSubstance[0]
-    private const int PoweredWheelsOffset = 1588;   // truck_b.truckWheelPowered[0]
+    private const int PoweredWheelsOffset = 1516;   // config_b.truckWheelPowered[0]
     private const int EngineEnabledOffset = 1576;   // truck_b.engineEnabled
     private const int WheelOnGroundOffset = 1590;   // truck_b.truck_wheelOnGround[0]
     private const int SubstanceNamesOffset = 4400;
@@ -182,7 +182,7 @@ internal sealed class TelemetryHaptics : IDisposable
 
     private bool IsPoweredWheelOffRoad()
     {
-        int wheelCount = (int)Math.Min(16u, ReadUInt32(56)); // config_ui.truckWheelCount
+        int wheelCount = (int)Math.Min(16u, ReadUInt32(80)); // config_ui.truckWheelCount
         if (wheelCount <= 0) wheelCount = 16;
 
         for (int i = 0; i < wheelCount; i++)
