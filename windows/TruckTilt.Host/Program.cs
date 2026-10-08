@@ -150,7 +150,7 @@ _ = Task.Run(async () =>
             else if (message.StartsWith("CONNECT|", StringComparison.OrdinalIgnoreCase))
             {
                 phoneEndpoint = result.RemoteEndPoint;
-                response = Encoding.UTF8.GetBytes($"WELCOME|{Environment.MachineName}|0.12.0");
+                response = Encoding.UTF8.GetBytes($"WELCOME|{Environment.MachineName}|0.12.4");
                 Console.WriteLine($"CONNECTED {result.RemoteEndPoint}");
             }
             else if (message.StartsWith("PING|", StringComparison.OrdinalIgnoreCase))
@@ -195,7 +195,20 @@ _ = Task.Run(async () =>
             }
 
             if (response is not null)
+            {
                 await udp.SendAsync(response, response.Length, result.RemoteEndPoint);
+
+                // Temporary end-to-end haptic diagnostic. This is deliberately
+                // sent immediately after CONNECT so we can prove whether the
+                // Windows host -> UDP -> Android vibration path works before
+                // debugging ETS2/ATS telemetry.
+                if (message.StartsWith("CONNECT|", StringComparison.OrdinalIgnoreCase))
+                {
+                    byte[] test = Encoding.UTF8.GetBytes("HAPTIC|TEST");
+                    await udp.SendAsync(test, test.Length, result.RemoteEndPoint);
+                    Console.WriteLine("HAPTIC TX: TEST (phone should vibrate once)");
+                }
+            }
         }
         catch (ObjectDisposedException) { break; }
         catch (Exception ex) { Console.Error.WriteLine("Network error: " + ex.Message); }
