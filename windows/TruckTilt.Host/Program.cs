@@ -22,8 +22,7 @@ try
     Console.WriteLine("Initializing HIDMaestro...");
     wheel = new VirtualWheel();
     Console.WriteLine("VIRTUAL STEERING WHEEL READY");
-    Console.WriteLine("Open joy.cpl and look for TruckTilt Virtual Steering Wheel.");
-    Console.WriteLine("Then bind the axes/buttons in ETS2 / ATS.");
+    Console.WriteLine("ETS2 / ATS auto-binding will be applied when the game is detected.");
 }
 catch (Exception ex)
 {
@@ -34,6 +33,10 @@ catch (Exception ex)
     Console.WriteLine("Run TruckTilt.Host as Administrator and try again.");
 }
 
+// Automatically configure TruckTilt in the currently running ETS2/ATS
+// profile. No game-selection button or setup wizard is required.
+GameAutoBinder.Start();
+
 using var udp = new UdpClient(Port) { EnableBroadcast = true };
 var state = InputState.Neutral;
 var lastPacket = DateTime.UtcNow;
@@ -41,6 +44,67 @@ var lastEndpoint = "";
 var sync = new object();
 long receivedPackets = 0;
 long invalidPackets = 0;
+
+uint previousButtonMask = 0;
+
+void LogButtonChanges(uint currentMask)
+{
+    uint changed = previousButtonMask ^ currentMask;
+    if (changed == 0)
+        return;
+
+    for (int i = 0; i < 32; i++)
+    {
+        uint bit = 1u << i;
+        if ((changed & bit) == 0)
+            continue;
+
+        bool pressed = (currentMask & bit) != 0;
+        Console.WriteLine(
+            pressed
+                ? $"BUTTON DOWN  {GetButtonName(i)}"
+                : $"BUTTON UP    {GetButtonName(i)}");
+    }
+
+    previousButtonMask = currentMask;
+}
+
+static string GetButtonName(int index) => index switch
+{
+    0 => "LEFT INDICATOR",
+    1 => "RIGHT INDICATOR",
+    2 => "HAZARD",
+    3 => "LIGHTS",
+    4 => "HIGH BEAM",
+    5 => "HORN",
+    6 => "AIR HORN",
+    7 => "WIPER",
+    8 => "WIPER+",
+    9 => "WIPER-",
+    10 => "ENGINE BRAKE",
+    11 => "RETARDER+",
+    12 => "RETARDER-",
+    13 => "CRUISE",
+    14 => "CRUISE+",
+    15 => "CRUISE-",
+    16 => "PARK BRAKE",
+    17 => "ENGINE",
+    18 => "GEAR UP",
+    19 => "GEAR DOWN",
+    20 => "CAMERA",
+    21 => "ROUTE",
+    22 => "MAP",
+    23 => "MIRROR",
+    24 => "BEACON",
+    25 => "DIFF LOCK",
+    26 => "TRAILER",
+    27 => "WARNING",
+    28 => "LEFT MIRROR",
+    29 => "RIGHT MIRROR",
+    30 => "ENTER",
+    31 => "BACK",
+    _ => $"BUTTON {index + 1}"
+};
 
 Console.CancelKeyPress += (_, e) =>
 {
@@ -103,17 +167,9 @@ _ = Task.Run(async () =>
                     wheel?.Submit(parsed.Steering, parsed.Throttle, parsed.Brake,
                         parsed.Clutch, parsed.Retarder, parsed.ButtonMask);
 
-                    if (receivedPackets == 1 || receivedPackets % 60 == 0)
-                    {
-                        Console.WriteLine(
-                            $"INPUT #{receivedPackets,6}  " +
-                            $"STEER {parsed.Steering,7:0.000}  " +
-                            $"THR {parsed.Throttle,5:0.00}  " +
-                            $"BRK {parsed.Brake,5:0.00}  " +
-                            $"CLT {parsed.Clutch,5:0.00}  " +
-                            $"RET {parsed.Retarder,5:0.00}  " +
-                            $"BTN 0x{parsed.ButtonMask:X8}");
-                    }
+                    // INPUT packets arrive continuously. Keep the host console
+                    // quiet and log only actual button state changes.
+                    LogButtonChanges(parsed.ButtonMask);
                 }
                 else
                 {
@@ -145,6 +201,7 @@ while (true)
     if (timedOut)
     {
         wheel?.Neutralize();
+        previousButtonMask = 0;
         Console.WriteLine("SAFETY TIMEOUT — wheel neutralized.");
     }
 }
