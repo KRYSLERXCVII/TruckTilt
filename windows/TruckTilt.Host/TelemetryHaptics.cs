@@ -15,10 +15,10 @@ internal sealed class TelemetryHaptics : IDisposable
     private const int GearOffset = 500;
     private const int GearsOffset = 68;
     private const int WheelSubstanceOffset = 120;
-    private const int EngineRpmOffset = 952;
-    private const int EngineRpmMaxOffset = 740;
+    private const int EngineRpmOffset = 768;
+    private const int EngineRpmMaxOffset = 736;
     private const int PoweredWheelsOffset = 1532;
-    private const int WheelOnGroundOffset = 1590;
+    private const int WheelOnGroundOffset = 1588;
     private const int SubstanceNamesOffset = 4400;
     private const int SubstanceNameSize = 64;
     private const int PollMs = 50;
@@ -30,6 +30,8 @@ internal sealed class TelemetryHaptics : IDisposable
     private int _lastGear = int.MinValue;
     private bool _offRoadLatched;
     private bool _telemetryLogged;
+    private bool _mapLogged;
+    private DateTime _lastDiagnostic = DateTime.MinValue;
     private DateTime _lastOffRoadPulse = DateTime.MinValue;
     private MemoryMappedFile? _map;
     private MemoryMappedViewAccessor? _view;
@@ -53,6 +55,12 @@ internal sealed class TelemetryHaptics : IDisposable
                     continue;
                 }
 
+                if (!_mapLogged)
+                {
+                    Console.WriteLine("HAPTICS: SCSTelemetry memory map opened.");
+                    _mapLogged = true;
+                }
+
                 if (!ReadByte(SdkActiveOffset).Equals(0))
                 {
                     if (!_telemetryLogged)
@@ -61,6 +69,7 @@ internal sealed class TelemetryHaptics : IDisposable
                         _telemetryLogged = true;
                     }
                     ProcessSnapshot();
+                    LogDiagnosticSnapshot();
                 }
                 else
                 {
@@ -97,6 +106,17 @@ internal sealed class TelemetryHaptics : IDisposable
             CloseMap();
             return false;
         }
+    }
+
+    private void LogDiagnosticSnapshot()
+    {
+        if ((DateTime.UtcNow - _lastDiagnostic).TotalSeconds < 1) return;
+        _lastDiagnostic = DateTime.UtcNow;
+        int gear = ReadInt32(GearOffset);
+        int gears = (int)ReadUInt32(GearsOffset);
+        float rpm = ReadFloat(EngineRpmOffset);
+        float rpmMax = ReadFloat(EngineRpmMaxOffset);
+        Console.WriteLine($"TELEMETRY OK | Gear: {gear} | Gears: {gears} | RPM: {rpm:0} | MaxRPM: {rpmMax:0}");
     }
 
     private void ProcessSnapshot()
