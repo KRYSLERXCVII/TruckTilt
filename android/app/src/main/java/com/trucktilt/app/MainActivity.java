@@ -8,6 +8,8 @@ import android.os.Vibrator;
 import android.os.VibratorManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.BroadcastReceiver;
+import android.content.IntentFilter;
 import android.net.Uri;
 import android.content.pm.ActivityInfo;
 import android.os.BatteryManager;
@@ -43,6 +45,17 @@ public class MainActivity extends Activity implements SensorEventListener {
 
 
     UdpClient net;
+    volatile int batteryPercent = -1;
+    final BroadcastReceiver batteryReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            int level = intent.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+            int scale = intent.getIntExtra(BatteryManager.EXTRA_SCALE, -1);
+            if (level >= 0 && scale > 0) {
+                batteryPercent = Math.max(0, Math.min(100, Math.round(level * 100f / scale)));
+                if (view != null) view.postInvalidate();
+            }
+        }
+    };
     volatile boolean hapticsEnabled;
     Vibrator vibrator;
     boolean offRoadRumbleActive = false;
@@ -75,6 +88,8 @@ public class MainActivity extends Activity implements SensorEventListener {
         view = new ControllerView(this);
         net = new UdpClient();
         setContentView(view);
+        Intent batteryIntent = registerReceiver(batteryReceiver, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+        if (batteryIntent != null) batteryReceiver.onReceive(this, batteryIntent);
         net.startDiscovery();
         startNetworkLoop();
     }
@@ -223,13 +238,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     int getBatteryPercent() {
-        try {
-            BatteryManager bm = (BatteryManager)getSystemService(BATTERY_SERVICE);
-            int level = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY);
-            return Math.max(0, Math.min(100, level));
-        } catch (Exception ignored) {
-            return -1;
-        }
+        return batteryPercent;
     }
 
     void openDonate() {
@@ -343,7 +352,8 @@ public class MainActivity extends Activity implements SensorEventListener {
                 int batteryColor = battery <= 15 ? Color.rgb(255,100,100)
                         : battery <= 30 ? Color.rgb(255,190,70)
                         : Color.WHITE;
-                text(c, battery + "%", w - 18, 36, 13, batteryColor, Paint.Align.RIGHT);
+                // Keep the battery percentage clear of the DONATE button.
+                text(c, "BAT " + battery + "%", w - 305, 36, 13, batteryColor, Paint.Align.RIGHT);
             }
             text(c,"by KRYSLERXCVII  •  v0.12.6",136,37,15,Color.rgb(205,212,220),Paint.Align.LEFT);
 
