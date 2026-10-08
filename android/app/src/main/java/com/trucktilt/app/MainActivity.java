@@ -65,6 +65,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     boolean referenceReturnCandidate = false;
     long lastMeaningfulRotationNs = 0;
     long referenceNearSinceNs = 0;
+    long correctionSettledSinceNs = 0;
     float gyroCorrectionOffset = 0f;
     float targetCorrectionOffset = 0f;
 
@@ -73,6 +74,8 @@ public class MainActivity extends Activity implements SensorEventListener {
     static final float REFERENCE_RETURN_THRESHOLD_DEG = 7f;
     static final float MAX_REFERENCE_CORRECTION_DEG = 20f;
     static final float REFERENCE_CORRECTION_STEP = 0.10f;
+    static final float REFERENCE_REBASE_EPSILON_DEG = 0.08f;
+    static final long REFERENCE_REBASE_HOLD_MS = 350L;
 
 
 
@@ -259,6 +262,42 @@ public class MainActivity extends Activity implements SensorEventListener {
                     // the wheel to an unrelated reference value.
                     gyroCorrectionOffset +=
                             (targetCorrectionOffset - gyroCorrectionOffset) * REFERENCE_CORRECTION_STEP;
+
+                    // IMPORTANT: once a return-to-calibration correction has
+                    // completely settled, commit that correction back into the
+                    // raw gyro origin. Without this rebase, the correction offset
+                    // can accumulate across repeated U-turns: raw angle keeps
+                    // growing while the old correction remains attached to it.
+                    // Rebase is allowed only while the reference is still near
+                    // the fixed calibration orientation and the phone is quiet.
+                    if (targetCorrectionOffset != 0f &&
+                            Math.abs(targetCorrectionOffset - gyroCorrectionOffset) <=
+                                    REFERENCE_REBASE_EPSILON_DEG &&
+                            currentQuaternion != null && calibrationQuaternion != null) {
+                        float referenceError = quaternionAngleBetween(
+                                currentQuaternion, calibrationQuaternion);
+                        boolean referenceStillNear = referenceError <= REFERENCE_RETURN_THRESHOLD_DEG;
+                        boolean gyroStill = Math.abs(gyroRateDeg) <= BIAS_STILL_RATE_DEG_PER_SEC;
+
+                        if (referenceStillNear && gyroStill) {
+                            if (correctionSettledSinceNs == 0)
+                                correctionSettledSinceNs = e.timestamp;
+
+                            if ((e.timestamp - correctionSettledSinceNs) >=
+                                    REFERENCE_REBASE_HOLD_MS * 1_000_000L) {
+                                // Preserve the visible steering value exactly:
+                                // raw + correction becomes the new raw origin.
+                                gyroRawAngle += gyroCorrectionOffset;
+                                gyroCorrectionOffset = 0f;
+                                targetCorrectionOffset = 0f;
+                                correctionSettledSinceNs = 0;
+                            }
+                        } else {
+                            correctionSettledSinceNs = 0;
+                        }
+                    } else if (targetCorrectionOffset == 0f) {
+                        correctionSettledSinceNs = 0;
+                    }
                 }
 
                 gyroAngle = gyroRawAngle + gyroCorrectionOffset;
@@ -431,6 +470,7 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         gyroCorrectionOffset = 0f;
         targetCorrectionOffset = 0f;
+        correctionSettledSinceNs = 0;
         referenceReturnCandidate = false;
         lastMeaningfulRotationNs = 0;
         referenceNearSinceNs = 0;
