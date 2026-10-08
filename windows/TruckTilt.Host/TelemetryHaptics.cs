@@ -4,21 +4,24 @@ using System.Text;
 namespace TruckTilt.Host;
 
 /// <summary>
-/// Lightweight reader for the SCSTelemetry shared-memory layout used by the
-/// community SCS telemetry plug-in. It is deliberately optional: if the map
-/// is not present, TruckTilt continues to work normally without telemetry.
+/// Optional ETS2/ATS telemetry reader for TruckTilt haptics.
+/// Uses the Rev. 12 SCSTelemetry shared-memory layout.
+/// No console spam: haptic events are sent silently to the connected phone.
 /// </summary>
 internal sealed class TelemetryHaptics : IDisposable
 {
     private const string MapName = "Local\\SCSTelemetry";
+
+    // Rev. 12 shared-memory offsets from scs-telemetry-common.hpp.
     private const int SdkActiveOffset = 0;
-    private const int GearOffset = 500;
-    private const int GearsOffset = 68;
-    private const int WheelSubstanceOffset = 120;
-    private const int EngineRpmOffset = 768;
-    private const int EngineRpmMaxOffset = 736;
-    private const int PoweredWheelsOffset = 1532;
-    private const int WheelOnGroundOffset = 1588;
+    private const int GearsOffset = 44;             // config_ui.gears
+    private const int GearOffset = 504;             // truck_i.gear
+    private const int EngineRpmMaxOffset = 740;     // config_f.engineRpmMax
+    private const int EngineRpmOffset = 952;        // truck_f.engineRpm
+    private const int WheelSubstanceOffset = 96;    // truck_ui.truck_wheelSubstance[0]
+    private const int PoweredWheelsOffset = 1588;   // truck_b.truckWheelPowered[0]
+    private const int EngineEnabledOffset = 1576;   // truck_b.engineEnabled
+    private const int WheelOnGroundOffset = 1590;   // truck_b.truck_wheelOnGround[0]
     private const int SubstanceNamesOffset = 4400;
     private const int SubstanceNameSize = 64;
     private const int PollMs = 50;
@@ -26,15 +29,15 @@ internal sealed class TelemetryHaptics : IDisposable
     private readonly Action<string> _sendHaptic;
     private readonly CancellationTokenSource _cts = new();
     private Task? _loop;
+
+    private MemoryMappedFile? _map;
+    private MemoryMappedViewAccessor? _view;
+
     private bool _shiftLatched;
     private int _lastGear = int.MinValue;
     private bool _offRoadLatched;
-    private bool _telemetryLogged;
-    private bool _mapLogged;
-    private DateTime _lastDiagnostic = DateTime.MinValue;
-    private DateTime _lastOffRoadPulse = DateTime.MinValue;
-    private MemoryMappedFile? _map;
-    private MemoryMappedViewAccessor? _view;
+    private bool _engineStateKnown;
+    private bool _lastEngineEnabled;
 
     public TelemetryHaptics(Action<string> sendHaptic) => _sendHaptic = sendHaptic;
 
@@ -55,37 +58,23 @@ internal sealed class TelemetryHaptics : IDisposable
                     continue;
                 }
 
-                if (!_mapLogged)
+                if (ReadByte(SdkActiveOffset) != 0)
                 {
-                    Console.WriteLine("HAPTICS: SCSTelemetry memory map opened.");
-                    _mapLogged = true;
-                }
-
-                if (!ReadByte(SdkActiveOffset).Equals(0))
-                {
-                    if (!_telemetryLogged)
-                    {
-                        Console.WriteLine("HAPTICS: SCSTelemetry shared memory connected.");
-                        _telemetryLogged = true;
-                    }
                     ProcessSnapshot();
-                    LogDiagnosticSnapshot();
                 }
                 else
                 {
-                    if (_telemetryLogged)
-                    {
-                        Console.WriteLine("HAPTICS: SCSTelemetry inactive.");
-                        _telemetryLogged = false;
-                    }
-                    ResetState();
+                    ResetState(sendRumbleStop: true);
                 }
             }
-            catch (OperationCanceledException) { break; }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
             catch
             {
                 CloseMap();
-                ResetState();
+                ResetState(sendRumbleStop: true);
             }
 
             try { await Task.Delay(PollMs, _cts.Token); }
@@ -108,23 +97,26 @@ internal sealed class TelemetryHaptics : IDisposable
         }
     }
 
-    private void LogDiagnosticSnapshot()
-    {
-        if ((DateTime.UtcNow - _lastDiagnostic).TotalSeconds < 1) return;
-        _lastDiagnostic = DateTime.UtcNow;
-        int gear = ReadInt32(GearOffset);
-        int gears = (int)ReadUInt32(GearsOffset);
-        float rpm = ReadFloat(EngineRpmOffset);
-        float rpmMax = ReadFloat(EngineRpmMaxOffset);
-        Console.WriteLine($"TELEMETRY OK | Gear: {gear} | Gears: {gears} | RPM: {rpm:0} | MaxRPM: {rpmMax:0}");
-    }
-
     private void ProcessSnapshot()
     {
         int gear = ReadInt32(GearOffset);
-        int gears = (int)Math.Max(0u, ReadUInt32(GearsOffset));
+        int gears = (int)Math.Min(64u, ReadUInt32(GearsOffset));
         float rpm = ReadFloat(EngineRpmOffset);
         float rpmMax = ReadFloat(EngineRpmMaxOffset);
+        bool engineEnabled = ReadByte(EngineEnabledOffset) != 0;
+
+        // Engine start/stop: initialize silently so connecting to a running
+        // truck does not create a false "engine start" vibration.
+        if (!_engineStateKnown)
+        {
+            _engineStateKnown = true;
+            _lastEngineEnabled = engineEnabled;
+        }
+        else if (engineEnabled != _lastEngineEnabled)
+        {
+            _lastEngineEnabled = engineEnabled;
+            _sendHaptic(engineEnabled ? "HAPTIC|ENGINE_START" : "HAPTIC|ENGINE_STOP");
+        }
 
         if (gear != _lastGear)
         {
@@ -132,23 +124,22 @@ internal sealed class TelemetryHaptics : IDisposable
             _shiftLatched = false;
         }
 
-        // Small shift reminder only when another forward gear exists. Once
-        // the truck is in the highest forward gear, this deliberately stays quiet.
+        // Small shift reminder only when another forward gear exists.
+        // Highest forward gear is intentionally silent.
         if (gears > 0 && gear > 0 && gear < gears && rpmMax > 100f)
         {
             float ratio = rpm / rpmMax;
             if (!_shiftLatched && ratio >= 0.86f)
             {
                 _shiftLatched = true;
-                Console.WriteLine("HAPTIC TX: shift reminder");
-                _sendHaptic("HAPTIC|1");
+                _sendHaptic("HAPTIC|SHIFT");
             }
             else if (ratio <= 0.78f)
             {
                 _shiftLatched = false;
             }
         }
-        else if (gear >= gears || gear <= 0)
+        else
         {
             _shiftLatched = false;
         }
@@ -157,25 +148,21 @@ internal sealed class TelemetryHaptics : IDisposable
         if (offRoad && !_offRoadLatched)
         {
             _offRoadLatched = true;
-            _lastOffRoadPulse = DateTime.UtcNow;
-            Console.WriteLine("HAPTIC TX: off-road");
-            _sendHaptic("HAPTIC|2");
+            _sendHaptic("HAPTIC|RUMBLE_START");
         }
-        else if (offRoad && (DateTime.UtcNow - _lastOffRoadPulse).TotalMilliseconds >= 700)
-        {
-            _lastOffRoadPulse = DateTime.UtcNow;
-            Console.WriteLine("HAPTIC TX: off-road");
-            _sendHaptic("HAPTIC|2");
-        }
-        else if (!offRoad)
+        else if (!offRoad && _offRoadLatched)
         {
             _offRoadLatched = false;
+            _sendHaptic("HAPTIC|RUMBLE_STOP");
         }
     }
 
     private bool IsPoweredWheelOffRoad()
     {
-        for (int i = 0; i < 16; i++)
+        int wheelCount = (int)Math.Min(16u, ReadUInt32(56)); // config_ui.truckWheelCount
+        if (wheelCount <= 0) wheelCount = 16;
+
+        for (int i = 0; i < wheelCount; i++)
         {
             bool powered = ReadByte(PoweredWheelsOffset + i) != 0;
             if (!powered) continue;
@@ -184,21 +171,23 @@ internal sealed class TelemetryHaptics : IDisposable
             if (!onGround) continue;
 
             uint substance = ReadUInt32(WheelSubstanceOffset + i * 4);
+            if (substance >= 25) continue;
+
             string name = ReadString(SubstanceNamesOffset + checked((int)substance * SubstanceNameSize));
             if (!IsRoadSurface(name)) return true;
         }
+
         return false;
     }
 
     private static bool IsRoadSurface(string name)
     {
-        if (string.IsNullOrWhiteSpace(name)) return false;
+        if (string.IsNullOrWhiteSpace(name)) return true;
         string n = name.Trim().ToLowerInvariant();
-        // SCS substance identifiers vary by game/version. Treat clearly road-like
-        // surfaces as road and let gravel/dirt/grass/sand/etc. produce feedback.
+
         return n.Contains("asphalt") || n.Contains("road") || n.Contains("pavement") ||
                n.Contains("concrete") || n.Contains("tarmac") || n.Contains("cement") ||
-               n.Contains("bridge");
+               n.Contains("bridge") || n.Contains("highway") || n.Contains("street");
     }
 
     private byte ReadByte(long offset) => _view!.ReadByte(offset);
@@ -215,12 +204,16 @@ internal sealed class TelemetryHaptics : IDisposable
         return Encoding.UTF8.GetString(bytes, 0, len);
     }
 
-    private void ResetState()
+    private void ResetState(bool sendRumbleStop)
     {
+        if (sendRumbleStop && _offRoadLatched)
+            _sendHaptic("HAPTIC|RUMBLE_STOP");
+
         _shiftLatched = false;
         _offRoadLatched = false;
         _lastGear = int.MinValue;
-        _telemetryLogged = false;
+        _engineStateKnown = false;
+        _lastEngineEnabled = false;
     }
 
     private void CloseMap()
@@ -235,6 +228,10 @@ internal sealed class TelemetryHaptics : IDisposable
     {
         _cts.Cancel();
         try { _loop?.Wait(500); } catch { }
+        if (_offRoadLatched)
+        {
+            try { _sendHaptic("HAPTIC|RUMBLE_STOP"); } catch { }
+        }
         CloseMap();
         _cts.Dispose();
     }

@@ -7,7 +7,7 @@ const int Port = 45454;
 const int TimeoutMs = 500;
 
 Console.Title = "TruckTilt Host";
-Console.WriteLine("TruckTilt Host v0.12.0 — ETS2 DirectInput Wheel");
+Console.WriteLine("TruckTilt Host v0.12.6 - ETS2 DirectInput Wheel");
 Console.WriteLine("================================================");
 Console.WriteLine($"Listening for TruckTilt phones on UDP {Port}");
 Console.WriteLine("Device: TruckTilt Virtual Steering Wheel (DirectInput/HID)");
@@ -33,97 +33,39 @@ catch (Exception ex)
     Console.WriteLine("Run TruckTilt.Host as Administrator and try again.");
 }
 
-// Automatically configure TruckTilt in the currently running ETS2/ATS
-// profile. No game-selection button or setup wizard is required.
 GameAutoBinder.Start();
 
-IPEndPoint? phoneEndpoint = null;
 using var udp = new UdpClient(Port) { EnableBroadcast = true };
-using var telemetryHaptics = new TelemetryHaptics(message =>
+var state = InputState.Neutral;
+var lastPacket = DateTime.UtcNow;
+var sync = new object();
+IPEndPoint? phoneEndpoint = null;
+
+void SendHaptic(string message)
 {
+    IPEndPoint? endpoint;
+    lock (sync) endpoint = phoneEndpoint;
+    if (endpoint == null) return;
+
     try
     {
-        var endpoint = phoneEndpoint;
-        if (endpoint is null) return;
         byte[] data = Encoding.UTF8.GetBytes(message);
         udp.Send(data, data.Length, endpoint);
     }
-    catch { }
-});
-telemetryHaptics.Start();
-Console.WriteLine("HAPTICS: telemetry reader started (optional SCSTelemetry shared memory).");
-var state = InputState.Neutral;
-var lastPacket = DateTime.UtcNow;
-var lastEndpoint = "";
-var sync = new object();
-long receivedPackets = 0;
-long invalidPackets = 0;
-
-uint previousButtonMask = 0;
-
-void LogButtonChanges(uint currentMask)
-{
-    uint changed = previousButtonMask ^ currentMask;
-    if (changed == 0)
-        return;
-
-    for (int i = 0; i < 32; i++)
+    catch
     {
-        uint bit = 1u << i;
-        if ((changed & bit) == 0)
-            continue;
-
-        bool pressed = (currentMask & bit) != 0;
-        Console.WriteLine(
-            pressed
-                ? $"BUTTON DOWN  {GetButtonName(i)}"
-                : $"BUTTON UP    {GetButtonName(i)}");
+        // Haptics are optional and must never interrupt controller operation.
     }
-
-    previousButtonMask = currentMask;
 }
 
-static string GetButtonName(int index) => index switch
-{
-    0 => "LEFT INDICATOR",
-    1 => "RIGHT INDICATOR",
-    2 => "HAZARD",
-    3 => "LIGHTS",
-    4 => "HIGH BEAM",
-    5 => "HORN",
-    6 => "AIR HORN",
-    7 => "WIPER",
-    8 => "WIPER+",
-    9 => "WIPER-",
-    10 => "ENGINE BRAKE",
-    11 => "RETARDER+",
-    12 => "RETARDER-",
-    13 => "CRUISE",
-    14 => "CRUISE+",
-    15 => "CRUISE-",
-    16 => "PARK BRAKE",
-    17 => "ENGINE",
-    18 => "GEAR UP",
-    19 => "GEAR DOWN",
-    20 => "CAMERA",
-    21 => "ROUTE",
-    22 => "MAP",
-    23 => "MIRROR",
-    24 => "BEACON",
-    25 => "DIFF LOCK",
-    26 => "TRAILER",
-    27 => "WARNING",
-    28 => "LEFT MIRROR",
-    29 => "RIGHT MIRROR",
-    30 => "ENTER",
-    31 => "BACK",
-    _ => $"BUTTON {index + 1}"
-};
+using var telemetryHaptics = new TelemetryHaptics(SendHaptic);
+telemetryHaptics.Start();
 
 Console.CancelKeyPress += (_, e) =>
 {
     e.Cancel = true;
     wheel?.Neutralize();
+    telemetryHaptics.Dispose();
     wheel?.Dispose();
     Environment.Exit(0);
 };
@@ -140,18 +82,12 @@ _ = Task.Run(async () =>
 
             if (message.StartsWith("DISCOVER|TruckTilt|", StringComparison.OrdinalIgnoreCase))
             {
-                response = Encoding.UTF8.GetBytes($"HELLO|TruckTilt|0.7.2|{Environment.MachineName}");
-                if (lastEndpoint != result.RemoteEndPoint.ToString())
-                {
-                    lastEndpoint = result.RemoteEndPoint.ToString();
-                    Console.WriteLine($"DISCOVERY from {lastEndpoint}");
-                }
+                response = Encoding.UTF8.GetBytes($"HELLO|TruckTilt|0.12.6|{Environment.MachineName}");
             }
             else if (message.StartsWith("CONNECT|", StringComparison.OrdinalIgnoreCase))
             {
-                phoneEndpoint = result.RemoteEndPoint;
-                response = Encoding.UTF8.GetBytes($"WELCOME|{Environment.MachineName}|0.12.4");
-                Console.WriteLine($"CONNECTED {result.RemoteEndPoint}");
+                lock (sync) phoneEndpoint = result.RemoteEndPoint;
+                response = Encoding.UTF8.GetBytes($"WELCOME|{Environment.MachineName}|0.12.6");
             }
             else if (message.StartsWith("PING|", StringComparison.OrdinalIgnoreCase))
             {
@@ -164,54 +100,33 @@ _ = Task.Run(async () =>
             }
             else if (message.StartsWith("CLICK|LEFT", StringComparison.OrdinalIgnoreCase))
             {
-                // Camera touchpad tap -> Windows left mouse click.
-                // CameraController also limits this to ETS2/ATS foreground.
                 CameraController.LeftClick();
             }
             else if (message.StartsWith("INPUT|", StringComparison.OrdinalIgnoreCase))
             {
-                Interlocked.Increment(ref receivedPackets);
                 if (InputState.TryParse(message, out var parsed))
                 {
-                    phoneEndpoint = result.RemoteEndPoint;
                     lock (sync)
                     {
                         state = parsed;
                         lastPacket = DateTime.UtcNow;
+                        phoneEndpoint = result.RemoteEndPoint;
                     }
 
                     wheel?.Submit(parsed.Steering, parsed.Throttle, parsed.Brake,
                         parsed.Clutch, parsed.Retarder, parsed.ButtonMask);
-
-                    // INPUT packets arrive continuously. Keep the host console
-                    // quiet and log only actual button state changes.
-                    LogButtonChanges(parsed.ButtonMask);
-                }
-                else
-                {
-                    Interlocked.Increment(ref invalidPackets);
-                    Console.WriteLine($"INVALID INPUT: {message}");
                 }
             }
 
             if (response is not null)
-            {
                 await udp.SendAsync(response, response.Length, result.RemoteEndPoint);
-
-                // Temporary end-to-end haptic diagnostic. This is deliberately
-                // sent immediately after CONNECT so we can prove whether the
-                // Windows host -> UDP -> Android vibration path works before
-                // debugging ETS2/ATS telemetry.
-                if (message.StartsWith("CONNECT|", StringComparison.OrdinalIgnoreCase))
-                {
-                    byte[] test = Encoding.UTF8.GetBytes("HAPTIC|TEST");
-                    await udp.SendAsync(test, test.Length, result.RemoteEndPoint);
-                    Console.WriteLine("HAPTIC TX: TEST (phone should vibrate once)");
-                }
-            }
         }
         catch (ObjectDisposedException) { break; }
-        catch (Exception ex) { Console.Error.WriteLine("Network error: " + ex.Message); }
+        catch
+        {
+            // Network errors are intentionally silent; controller safety state
+            // is handled by the timeout loop below.
+        }
     }
 });
 
@@ -230,8 +145,7 @@ while (true)
     if (timedOut)
     {
         wheel?.Neutralize();
-        previousButtonMask = 0;
-        Console.WriteLine("SAFETY TIMEOUT — wheel neutralized.");
+        Console.WriteLine("SAFETY TIMEOUT - wheel neutralized.");
     }
 }
 
@@ -245,7 +159,7 @@ sealed record InputState(
     double Retarder,
     uint ButtonMask)
 {
-    public static readonly InputState Neutral = new(0,0,0,0,0,0,0,0);
+    public static readonly InputState Neutral = new(0, 0, 0, 0, 0, 0, 0, 0);
 
     public static bool TryParse(string packet, out InputState state)
     {
@@ -253,7 +167,6 @@ sealed record InputState(
         try
         {
             var p = packet.Split('|');
-            // INPUT + seq + timestamp + 5 analogs + 32 buttons = 40 fields.
             if (p.Length < 40 || !p[0].Equals("INPUT", StringComparison.OrdinalIgnoreCase)) return false;
 
             uint mask = 0;

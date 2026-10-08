@@ -1,4 +1,4 @@
-# TruckTilt v0.10.24 — Auto-Binding Normal Pedal Mode
+# TruckTilt v0.12.6 — Auto-Binding Normal Pedal Mode
 
 This Windows host package automatically configures the active ETS2/ATS profile to match the known-good TruckTilt manual controller setup.
 
@@ -32,10 +32,4 @@ Run the Windows host as Administrator as before.
 The binder uses the SCS documented `SYSTEM_ID.'DEVICE_ID'.INPUT_ID` format and discovers the TruckTilt DirectInput ID from `game.log.txt` / `global_controls.sii`. SCS documents `j_throttle`, `j_brake`, and `c_jcombined` as the relevant profile controls.
 
 
-## Haptics
-
-TruckTilt has one user-facing haptics switch: **HAPTICS ON/OFF**. When enabled, the host can send automatic phone feedback for shift reminders and rough/off-road surfaces.
-
-The host reads the community SCS telemetry shared-memory map `Local\\SCSTelemetry` when it is available. If the telemetry map is not present, the controller continues to work normally and haptics simply remain inactive.
-
-A compatible SCS telemetry plug-in must be installed in the game's `bin\\win_x64\\plugins` directory for telemetry-driven haptics. The shared-memory approach is documented by the SCS telemetry community plugin.
+Haptics are optional and controlled by a single ON/OFF setting in the Android app.

@@ -2,6 +2,7 @@ package com.trucktilt.app;
 
 import android.app.Activity;
 import android.os.Bundle;
+import android.os.Build;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.os.VibratorManager;
@@ -30,7 +31,6 @@ public class MainActivity extends Activity implements SensorEventListener {
     static final int INPUT_INTERVAL_MS = 16;
     // Change this to your exact Buy Me a Coffee page if your username differs.
     static final String DONATE_URL = "https://buymeacoffee.com/kryslerxcvii";
-    static final String HAPTIC_PREFS = "trucktilt_haptics";
 
     ControllerView view;
     SensorManager sensors;
@@ -42,6 +42,9 @@ public class MainActivity extends Activity implements SensorEventListener {
 
 
     UdpClient net;
+    volatile boolean hapticsEnabled;
+    Vibrator vibrator;
+    boolean offRoadRumbleActive = false;
 
     final ScheduledExecutorService networkExecutor =
             Executors.newScheduledThreadPool(2);
@@ -54,6 +57,15 @@ public class MainActivity extends Activity implements SensorEventListener {
         setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN,
                 WindowManager.LayoutParams.FLAG_FULLSCREEN);
+
+        hapticsEnabled = getSharedPreferences("trucktilt_settings", MODE_PRIVATE)
+                .getBoolean("haptics_enabled", true);
+        if (Build.VERSION.SDK_INT >= 31) {
+            VibratorManager vm = (VibratorManager)getSystemService(VIBRATOR_MANAGER_SERVICE);
+            vibrator = vm.getDefaultVibrator();
+        } else {
+            vibrator = (Vibrator)getSystemService(VIBRATOR_SERVICE);
+        }
 
         sensors = (SensorManager)getSystemService(SENSOR_SERVICE);
         gyro = sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
@@ -96,6 +108,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         if (pingFuture != null) pingFuture.cancel(true);
         networkExecutor.shutdownNow();
         if (net != null) net.stop();
+        stopOffRoadRumble();
         super.onDestroy();
     }
 
@@ -129,36 +142,83 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     @Override public void onAccuracyChanged(Sensor s, int a) {}
 
-    boolean isHapticsEnabled() {
-        return getSharedPreferences(HAPTIC_PREFS, MODE_PRIVATE).getBoolean("enabled", true);
-    }
-
     void setHapticsEnabled(boolean enabled) {
-        getSharedPreferences(HAPTIC_PREFS, MODE_PRIVATE).edit().putBoolean("enabled", enabled).apply();
+        hapticsEnabled = enabled;
+        getSharedPreferences("trucktilt_settings", MODE_PRIVATE)
+                .edit().putBoolean("haptics_enabled", enabled).apply();
+        if (!enabled) stopOffRoadRumble();
         if (view != null) view.invalidate();
     }
 
-    void performHaptic(int type) {
-        if (!isHapticsEnabled()) return;
-        try {
-            long[] timings;
-            int[] amplitudes;
-            if (type == 2) { // rough/off-road rumble
-                timings = new long[]{0, 22, 34, 18, 42};
-                amplitudes = new int[]{0, 55, 0, 40, 0};
-            } else { // crisp shift reminder
-                timings = new long[]{0, 24};
-                amplitudes = new int[]{0, 75};
+    void handleHapticMessage(String message) {
+        if (!hapticsEnabled || vibrator == null || !vibrator.hasVibrator()) return;
+        final String type = message.trim().toUpperCase(Locale.US);
+        runOnUiThread(() -> {
+            if (!hapticsEnabled || vibrator == null || !vibrator.hasVibrator()) return;
+            try {
+                switch (type) {
+                    case "SHIFT":
+                        vibrateOneShot(32, 85);
+                        break;
+                    case "ENGINE_START":
+                        vibrateWaveform(
+                                new long[]{0, 55, 35, 95, 55},
+                                new int[]{0, 55, 95, 55, 0}, -1);
+                        break;
+                    case "ENGINE_STOP":
+                        vibrateWaveform(
+                                new long[]{0, 80, 45, 55, 65},
+                                new int[]{0, 70, 45, 25, 0}, -1);
+                        break;
+                    case "RUMBLE_START":
+                        startOffRoadRumble();
+                        break;
+                    case "RUMBLE_STOP":
+                        stopOffRoadRumble();
+                        break;
+                    default:
+                        break;
+                }
+            } catch (Throwable ignored) {
+                // Haptics must never interrupt controller operation.
             }
-            if (android.os.Build.VERSION.SDK_INT >= 31) {
-                VibratorManager vm = (VibratorManager)getSystemService(VIBRATOR_MANAGER_SERVICE);
-                Vibrator v = vm.getDefaultVibrator();
-                if (v != null && v.hasVibrator()) v.vibrate(VibrationEffect.createWaveform(timings, amplitudes, -1));
-            } else {
-                Vibrator v = (Vibrator)getSystemService(VIBRATOR_SERVICE);
-                if (v != null && v.hasVibrator()) v.vibrate(VibrationEffect.createWaveform(timings, amplitudes, -1));
-            }
-        } catch (Throwable ignored) {}
+        });
+    }
+
+    void vibrateOneShot(long durationMs, int amplitude) {
+        if (vibrator == null || !vibrator.hasVibrator()) return;
+        if (Build.VERSION.SDK_INT >= 26) {
+            int a = Math.max(1, Math.min(255, amplitude));
+            vibrator.vibrate(VibrationEffect.createOneShot(durationMs, a));
+        } else {
+            vibrator.vibrate(durationMs);
+        }
+    }
+
+    void vibrateWaveform(long[] timings, int[] amplitudes, int repeat) {
+        if (vibrator == null || !vibrator.hasVibrator()) return;
+        if (Build.VERSION.SDK_INT >= 26) {
+            vibrator.vibrate(VibrationEffect.createWaveform(timings, amplitudes, repeat));
+        } else {
+            vibrator.vibrate(timings, repeat);
+        }
+    }
+
+    void startOffRoadRumble() {
+        if (offRoadRumbleActive || vibrator == null || !vibrator.hasVibrator()) return;
+        offRoadRumbleActive = true;
+        // Soft repeating cabin/road rumble. The repeat begins after the short
+        // fade-in so it does not feel like repeated notification pulses.
+        vibrateWaveform(
+                new long[]{0, 250, 250, 200},
+                new int[]{0, 42, 30, 36}, 1);
+    }
+
+    void stopOffRoadRumble() {
+        offRoadRumbleActive = false;
+        if (vibrator != null) {
+            try { vibrator.cancel(); } catch (Throwable ignored) {}
+        }
     }
 
     void openDonate() {
@@ -267,8 +327,7 @@ public class MainActivity extends Activity implements SensorEventListener {
             c.drawRect(0,0,w,58,p);
             // Clean, light branding: keep the creator/version secondary to the app name.
             text(c,"TRUCKTILT",20,37,20,Color.WHITE,Paint.Align.LEFT);
-            text(c,"by KRYSLERXCVII  •  v0.12.0",136,37,15,Color.rgb(205,212,220),Paint.Align.LEFT);
-            button(c, isHapticsEnabled() ? "HAPTICS ON" : "HAPTICS OFF", 435, 29, 116, 34, isHapticsEnabled());
+            text(c,"by KRYSLERXCVII  •  v0.12.6",136,37,15,Color.rgb(205,212,220),Paint.Align.LEFT);
 
             // Prominent support button: red only for the donation CTA so it is
             // immediately discoverable without overpowering the cockpit.
@@ -301,8 +360,9 @@ public class MainActivity extends Activity implements SensorEventListener {
             button(c,rangeDeg+"°",wheelCx+20,78,88,38,false);
             button(c,"CALIBRATE",wheelCx+111,78,115,38,false);
             button(c,"CUSTOMIZE",wheelCx+215,78,135,38,customizing);
+            button(c,hapticsEnabled ? "HAPTICS ON" : "HAPTICS OFF",wheelCx+215,124,135,34,hapticsEnabled);
             if(customizing)
-                button(c,"RESET LAYOUT",wheelCx+215,124,135,34,false);
+                button(c,"RESET LAYOUT",wheelCx+215,164,135,34,false);
 
             // Steering-wheel quick controls: indicators on either side, horns above.
             // Indicators sit fully OUTSIDE the steering wheel so they remain visible
@@ -552,6 +612,10 @@ public class MainActivity extends Activity implements SensorEventListener {
                     editKey=null; editResizing=false;
                     invalidate(); return true;
                 }
+                if(hit(hapticsEnabled ? "HAPTICS ON" : "HAPTICS OFF",x,y)){
+                    setHapticsEnabled(!hapticsEnabled);
+                    return true;
+                }
                 if(customizing) {
                     if(hit("RESET LAYOUT",x,y)){
                         resetLayout();
@@ -580,10 +644,6 @@ public class MainActivity extends Activity implements SensorEventListener {
                     return true;
                 }
 
-                if(hit("HAPTICS ON",x,y) || hit("HAPTICS OFF",x,y)){
-                    setHapticsEnabled(!isHapticsEnabled());
-                    return true;
-                }
                 if(hit("DONATE",x,y)){ openDonate(); return true; }
                 if(hit("MODE",x,y)){ mode=(mode+1)%3; invalidate(); return true; }
                 if(hit(rangeDeg+"°",x,y)){ cycleRange(); invalidate(); return true; }
@@ -949,34 +1009,14 @@ public class MainActivity extends Activity implements SensorEventListener {
                     if(s.startsWith("HELLO|TruckTilt|")){
                         host=p.getAddress(); hostPort=p.getPort(); connected=true;
                         sendRaw("CONNECT|"+android.os.Build.MODEL,host,hostPort);
-                    } else if(s.startsWith("WELCOME|")) {
-                        connected=true;
-                    } else if(s.startsWith("HAPTIC|")){
-                        // Windows telemetry sends asynchronous haptic events to the
-                        // phone over the same UDP connection used for controller data.
-                        String payload = s.substring(7).trim();
-                        if ("TEST".equalsIgnoreCase(payload)) {
-                            System.out.println("HAPTIC RX: TEST");
-                            postHaptic(1);
-                        } else {
-                            try {
-                                int type = Integer.parseInt(payload);
-                                System.out.println("HAPTIC RX: " + type);
-                                postHaptic(type);
-                            } catch(Exception ignored) {}
-                        }
-                    } else if(s.startsWith("PONG|")){
+                    } else if(s.startsWith("WELCOME|")) connected=true;
+                    else if(s.startsWith("PONG|")){
                         try{ long sent=Long.parseLong(s.substring(5).trim()); rttMs=(int)Math.max(0,System.currentTimeMillis()-sent); }
                         catch(Exception ignored){}
                     }
                     view.postInvalidate();
                 }
             }catch(Exception ignored){ connected=false; }
-        }
-
-        void postHaptic(int type){
-            // Keep vibration on the Android main thread for predictable device behavior.
-            runOnUiThread(() -> performHaptic(type));
         }
 
         void sendCurrentInput(ControllerView v){

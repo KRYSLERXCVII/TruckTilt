@@ -22,7 +22,6 @@ The phone acts as the physical controller while a lightweight Windows host recei
 - 🧩 Customizable cockpit layout
 - 💾 Saved custom control positions and sizes
 - 🔴 Safe neutralization when the phone disconnects
-- 📳 Optional automatic phone haptics for shift reminders and rough/off-road surfaces
 
 ---
 
@@ -191,10 +190,3 @@ TruckTilt currently has a working Android cockpit, Windows host, Wi-Fi/UDP commu
 The project is continuing toward a polished, community-friendly mobile controller for truck simulators.
 
 If the repository is intended to be open source, a standard license such as MIT can be added as a separate `LICENSE` file.
-
-
-## Haptics
-
-TruckTilt keeps haptic controls intentionally simple: the Android cockpit has one **HAPTICS ON/OFF** switch. When enabled, the Windows host uses available SCS telemetry to generate a small shift reminder when another gear is available and a subtle rough/off-road pulse when powered wheels leave normal road surfaces. No shift reminder is sent while already in the highest forward gear.
-
-Telemetry is optional. If the SCS telemetry shared-memory map is unavailable, TruckTilt continues to operate as a controller without telemetry haptics. SCS documents its telemetry SDK as a third-party telemetry interface, and the community shared-memory plug-in exposes the map `Local\\SCSTelemetry`.
