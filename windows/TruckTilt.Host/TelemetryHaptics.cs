@@ -38,6 +38,9 @@ internal sealed class TelemetryHaptics : IDisposable
     private bool _offRoadLatched;
     private bool _engineStateKnown;
     private bool _lastEngineEnabled;
+    private bool _mapStatusLogged;
+    private bool _activeStatusLogged;
+    private DateTime _lastWaitingLog = DateTime.MinValue;
 
     public TelemetryHaptics(Action<string> sendHaptic) => _sendHaptic = sendHaptic;
 
@@ -54,16 +57,31 @@ internal sealed class TelemetryHaptics : IDisposable
             {
                 if (_view == null && !TryOpen())
                 {
+                    if ((DateTime.UtcNow - _lastWaitingLog).TotalSeconds >= 5)
+                    {
+                        Console.WriteLine("HAPTICS: waiting for SCSTelemetry...");
+                        _lastWaitingLog = DateTime.UtcNow;
+                    }
                     await Task.Delay(1000, _cts.Token);
                     continue;
                 }
 
                 if (ReadByte(SdkActiveOffset) != 0)
                 {
+                    if (!_activeStatusLogged)
+                    {
+                        Console.WriteLine("HAPTICS: telemetry active.");
+                        _activeStatusLogged = true;
+                    }
                     ProcessSnapshot();
                 }
                 else
                 {
+                    if (_activeStatusLogged)
+                    {
+                        Console.WriteLine("HAPTICS: telemetry connected, waiting for active game data.");
+                        _activeStatusLogged = false;
+                    }
                     ResetState(sendRumbleStop: true);
                 }
             }
@@ -88,6 +106,11 @@ internal sealed class TelemetryHaptics : IDisposable
         {
             _map = MemoryMappedFile.OpenExisting(MapName, MemoryMappedFileRights.Read);
             _view = _map.CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read);
+            if (!_mapStatusLogged)
+            {
+                Console.WriteLine("HAPTICS: telemetry connected.");
+                _mapStatusLogged = true;
+            }
             return true;
         }
         catch
@@ -222,6 +245,8 @@ internal sealed class TelemetryHaptics : IDisposable
         try { _map?.Dispose(); } catch { }
         _view = null;
         _map = null;
+        _mapStatusLogged = false;
+        _activeStatusLogged = false;
     }
 
     public void Dispose()
