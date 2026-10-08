@@ -405,7 +405,6 @@ internal static class GameAutoBinder
 
         string result = new Regex(pattern).Replace(
             text,
-            pattern,
             m =>
             {
                 string current = m.Value;
@@ -437,7 +436,6 @@ internal static class GameAutoBinder
 
         result = new Regex(pattern).Replace(
             currentText,
-            pattern,
             m =>
             {
                 string newLine = m.Groups["prefix"].Value + $"`{value}`" +
@@ -466,7 +464,6 @@ internal static class GameAutoBinder
 
         text = new Regex(pattern).Replace(
             text,
-            pattern,
             m =>
             {
                 string expr = m.Groups["expr"].Value;
@@ -516,7 +513,6 @@ internal static class GameAutoBinder
 
         string replaced = new Regex(pattern).Replace(
             text,
-            pattern,
             m =>
             {
                 string newLine = m.Groups["prefix"].Value + value +
