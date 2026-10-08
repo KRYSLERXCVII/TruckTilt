@@ -1023,10 +1023,29 @@ public class MainActivity extends Activity implements SensorEventListener {
             }
         }
 
+        // Pedal response curves.
+        // The touch position remains linear, but truck pedals feel more natural
+        // when the lower part of the travel is softer and full input is reserved
+        // for the end of the physical pedal travel.
+        //
+        // Brake: noticeably softer in the first part of travel so ~30% touch
+        // does not behave like a heavy brake application.
+        // Throttle: slightly progressive so 100% is only reached at the very top.
+        static float brakeResponse(float v) {
+            v = clamp(v, 0f, 1f);
+            return (float)Math.pow(v, 1.70);
+        }
+
+        static float throttleResponse(float v) {
+            v = clamp(v, 0f, 1f);
+            return (float)Math.pow(v, 1.35);
+        }
+
         void setPedal(String s,float v){
+            v = clamp(v,0f,1f);
             if("CLUTCH".equals(s)) clutch=v;
-            else if("BRAKE".equals(s)) brake=v;
-            else if("THROTTLE".equals(s)) throttle=v;
+            else if("BRAKE".equals(s)) brake=brakeResponse(v);
+            else if("THROTTLE".equals(s)) throttle=throttleResponse(v);
             else if("RETARDER".equals(s)) retarder=v;
         }
         void cycleRange(){
