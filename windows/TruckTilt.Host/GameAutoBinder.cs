@@ -166,6 +166,11 @@ internal static class GameAutoBinder
 
         Console.WriteLine(
             $"AUTO-BIND: {gameName} detected — TruckTilt configured ({changed} changes).");
+        Console.WriteLine("AUTO-BIND: Steering X / Normal");
+        Console.WriteLine("AUTO-BIND: Throttle RY / Normal");
+        Console.WriteLine("AUTO-BIND: Brake RX / Normal");
+        Console.WriteLine("AUTO-BIND: Clutch SL1 / Normal");
+        Console.WriteLine("AUTO-BIND: Combined pedals OFF");
         Console.WriteLine($"AUTO-BIND: Backup created: {Path.GetFileName(backupPath)}");
     }
 
@@ -263,13 +268,13 @@ internal static class GameAutoBinder
         {
             string log = File.ReadAllText(logPath);
 
-            // Example:
-            // game /home/profiles/4B726973.../save/...
-            // game /home/steam_profiles/....../save/...
+            // SCS logs can contain either Linux-style paths or Windows-style
+            // paths. The important part is the active profile folder directly
+            // below "profiles" or "steam_profiles".
             MatchCollection matches = Regex.Matches(
                 log,
-                @"game\s+/home/(?<folder>profiles|steam_profiles)/(?<id>[^/\s]+)/",
-                RegexOptions.IgnoreCase);
+                @"(?:^|[\\/\s])(?:[A-Za-z]:[\\/])?(?:home[\\/])?(?:profiles|steam_profiles)[\\/](?<id>[^\\/\s]+)(?:[\\/])",
+                RegexOptions.IgnoreCase | RegexOptions.Multiline);
 
             if (matches.Count == 0)
                 return null;
@@ -369,6 +374,22 @@ internal static class GameAutoBinder
 
         // Separate axis configuration: TruckTilt has independent throttle/brake.
         ReplaceOrAddConstant(ref text, "c_jcombined", "0.000000", ref changed);
+
+        // Match the user's known-good ETS2/ATS manual setup:
+        // Steering = X Axis (Normal)
+        // Acceleration = Y Rotation / RY (Normal)
+        // Brake = X Rotation / RX (Normal)
+        // Clutch = Slider / SL1 (Normal)
+        //
+        // In SCS controls.sii, c_jz* selects centered-axis mode and c_ji*
+        // selects inverted-axis mode. Both are OFF for the Normal mode.
+        ReplaceOrAddConstant(ref text, "c_jzthrottle", "0.000000", ref changed);
+        ReplaceOrAddConstant(ref text, "c_jithrottle", "0.000000", ref changed);
+        ReplaceOrAddConstant(ref text, "c_jzbrake", "0.000000", ref changed);
+        ReplaceOrAddConstant(ref text, "c_jibrake", "0.000000", ref changed);
+        ReplaceOrAddConstant(ref text, "c_jzclutch", "0.000000", ref changed);
+        ReplaceOrAddConstant(ref text, "c_jiclutch", "0.000000", ref changed);
+        ReplaceOrAddConstant(ref text, "c_jisteer", "0.000000", ref changed);
 
         if (text == original)
             return false;

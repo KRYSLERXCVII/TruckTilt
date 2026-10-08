@@ -1,29 +1,32 @@
-# TruckTilt v0.10.23 — Auto-Binding + Pedal Axis Fix
+# TruckTilt v0.10.24 — Auto-Binding Normal Pedal Mode
 
-This Windows host package restores seamless ETS2/ATS automatic binding and fixes the throttle/brake axis mismatch.
+This Windows host package automatically configures the active ETS2/ATS profile to match the known-good TruckTilt manual controller setup.
+
+## Target controller setup
+
+- Steering → X Axis (`joy.x`) — **Normal**
+- Acceleration → Y Rotation (`joy.ry`) — **Normal**
+- Brake → X Rotation (`joy.rx`) — **Normal**
+- Clutch → Slider (`joy.sl1`) — **Normal**
+- Combined pedals → **OFF**
+
+TruckTilt's virtual DirectInput wheel exposes RX as brake and RY as throttle.
 
 ## What changed
 
 - ETS2/ATS are detected automatically. No game-selection button.
+- The binder now handles Windows-style as well as SCS/Linux-style profile paths when locating the active profile from `game.log.txt`.
 - `controls.sii` is backed up before TruckTilt changes it.
-- TruckTilt DirectInput axes are bound as:
-  - Steering → `joy.x`
-  - Brake → `joy.rx`
-  - Throttle → `joy.ry`
-  - Clutch → `joy.sl1`
-- `c_jcombined` is set to `0.000000` so throttle and brake remain independent.
-- VirtualWheel now sends:
-  - `RX = brake`
-  - `RY = throttle`
-  - `Slider = clutch`
-  - `Dial = retarder`
+- The four axis aliases are enforced: `joy.x`, `joy.ry`, `joy.rx`, `joy.sl1`.
+- Combined pedals are forced OFF with `c_jcombined 0.000000`.
+- Normal axis mode is explicitly enforced by disabling centered and inverted flags for steering, throttle, brake, and clutch.
+- The host logs the exact automatic configuration applied.
+- VirtualWheel mapping remains: RX = brake, RY = throttle, Slider = clutch, Dial = retarder.
 - Existing UDP, camera touchpad/click, safety timeout, button logging, and HIDMaestro path are retained.
 - Android code is not changed.
 
 ## Important
 
-Replace the corresponding Windows host files in your TruckTilt repository with this package and let GitHub Actions build it.
+Run the Windows host as Administrator as before.
 
-Run the host as Administrator as before.
-
-The binding uses the SCS documented `SYSTEM_ID.'DEVICE_ID'.INPUT_ID` format and the TruckTilt DirectInput ID discovered from `game.log.txt` / `global_controls.sii`.
+The binder uses the SCS documented `SYSTEM_ID.'DEVICE_ID'.INPUT_ID` format and discovers the TruckTilt DirectInput ID from `game.log.txt` / `global_controls.sii`. SCS documents `j_throttle`, `j_brake`, and `c_jcombined` as the relevant profile controls.
