@@ -22,7 +22,7 @@ try
     Console.WriteLine("Initializing HIDMaestro...");
     wheel = new VirtualWheel();
     Console.WriteLine("VIRTUAL STEERING WHEEL READY");
-    Console.WriteLine("ETS2 / ATS auto-binding will be applied when the game is detected.");
+    Console.WriteLine("ETS2 / ATS automatic binding is disabled in this safe build.");
 }
 catch (Exception ex)
 {
@@ -33,9 +33,9 @@ catch (Exception ex)
     Console.WriteLine("Run TruckTilt.Host as Administrator and try again.");
 }
 
-// Automatically configure TruckTilt in the currently running ETS2/ATS
-// profile. No game-selection button or setup wizard is required.
-GameAutoBinder.Start();
+// Automatic controls.sii modification is intentionally disabled here.
+ // It previously caused incorrect throttle/brake axis assignments.
+ // The UDP -> VirtualWheel input path is left unchanged.
 
 using var udp = new UdpClient(Port) { EnableBroadcast = true };
 var state = InputState.Neutral;

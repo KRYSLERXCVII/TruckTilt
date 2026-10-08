@@ -62,7 +62,7 @@ public sealed class VirtualWheel : IDisposable
             .Type("wheel")
             .Connection("usb")
             .FromDescriptorBuilder(descriptor)
-            .Notes("TruckTilt ETS2 wheel: X steering, Rx throttle, Ry brake, Slider clutch, Dial retarder, 32 buttons, 8-way POV. Extra Slider/Dial axes are driven directly by HID usage.")
+            .Notes("TruckTilt ETS2 wheel: X steering, Rx brake, Ry throttle, Slider clutch, Dial retarder, 32 buttons, 8-way POV. Extra Slider/Dial axes are driven directly by HID usage.")
             .Build();
 
         Console.WriteLine($"Custom HID profile: {_profile.Name}");
@@ -77,8 +77,8 @@ public sealed class VirtualWheel : IDisposable
         // HIDMaestro's AddStick/AddTrigger allocator is positional.
         // With one stick followed by two triggers, the descriptor is:
         //   X/Y       = steering stick pair
-        //   Rx        = first trigger slot (our throttle)
-        //   Ry        = second trigger slot (our brake)
+        //   Rx        = first trigger slot (our brake)
+        //   Ry        = second trigger slot (our throttle)
         //   Slider    = third trigger slot (our clutch)
         //   Dial      = fourth trigger slot (our retarder)
         // The four AddTrigger calls are intentionally used instead of AddAxis
@@ -142,8 +142,15 @@ public sealed class VirtualWheel : IDisposable
         // tried to access triggers[2]/[3], but that list only contains two
         // entries, leaving Slider and Dial permanently at their defaults.
         var triggers = _profile.Triggers;
-        if (triggers.Count > 0) _axes[triggers[0].Axis] = (float)throttle;
-        if (triggers.Count > 1) _axes[triggers[1].Axis] = (float)brake;
+
+        // DirectInput pedal order for TruckTilt:
+        // first trigger slot (Rx)  = brake
+        // second trigger slot (Ry) = throttle
+        //
+        // Keep the phone's progressive values unchanged; only swap which
+        // physical HID axis receives them.
+        if (triggers.Count > 0) _axes[triggers[0].Axis] = (float)brake;
+        if (triggers.Count > 1) _axes[triggers[1].Axis] = (float)throttle;
 
         // Extra DirectInput pedal axes.
         _axes[HMAxis.Slider] = (float)clutch;
