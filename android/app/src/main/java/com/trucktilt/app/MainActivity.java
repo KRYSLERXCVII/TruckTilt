@@ -39,6 +39,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     SensorManager sensors;
     Sensor gyro, rotation;
     float gyroAngle = 0f, gyroBias = 0f, tiltAngle = 0f;
+    long lastGyroNs = 0L;
     float gyroRawAngle = 0f;
 
     // Gyro-rate bias estimation is deliberately conservative. It is used only
