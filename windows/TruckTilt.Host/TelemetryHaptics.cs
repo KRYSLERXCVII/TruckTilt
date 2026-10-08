@@ -87,7 +87,7 @@ internal sealed class TelemetryHaptics : IDisposable
     private void ProcessSnapshot()
     {
         int gear = ReadInt32(GearOffset);
-        int gears = (int)Math.Max(0u, ReadUInt32(GearsOffset));
+        int gears = Math.Max(0, ReadUInt32(GearsOffset));
         float rpm = ReadFloat(EngineRpmOffset);
         float rpmMax = ReadFloat(EngineRpmMaxOffset);
 
@@ -105,6 +105,7 @@ internal sealed class TelemetryHaptics : IDisposable
             if (!_shiftLatched && ratio >= 0.86f)
             {
                 _shiftLatched = true;
+                Console.WriteLine("HAPTIC TX: shift reminder");
                 _sendHaptic("HAPTIC|1");
             }
             else if (ratio <= 0.78f)
@@ -122,11 +123,13 @@ internal sealed class TelemetryHaptics : IDisposable
         {
             _offRoadLatched = true;
             _lastOffRoadPulse = DateTime.UtcNow;
+            Console.WriteLine("HAPTIC TX: off-road");
             _sendHaptic("HAPTIC|2");
         }
         else if (offRoad && (DateTime.UtcNow - _lastOffRoadPulse).TotalMilliseconds >= 700)
         {
             _lastOffRoadPulse = DateTime.UtcNow;
+            Console.WriteLine("HAPTIC TX: off-road");
             _sendHaptic("HAPTIC|2");
         }
         else if (!offRoad)
