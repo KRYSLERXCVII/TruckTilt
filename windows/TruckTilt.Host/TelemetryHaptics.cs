@@ -87,7 +87,7 @@ internal sealed class TelemetryHaptics : IDisposable
     private void ProcessSnapshot()
     {
         int gear = ReadInt32(GearOffset);
-        int gears = Math.Max(0, ReadUInt32(GearsOffset));
+        int gears = (int)Math.Max(0u, ReadUInt32(GearsOffset));
         float rpm = ReadFloat(EngineRpmOffset);
         float rpmMax = ReadFloat(EngineRpmMaxOffset);
 
