@@ -66,9 +66,14 @@ internal static class GameAutoBinder
     private static readonly Dictionary<string, string> AxisBindings =
         new(StringComparer.OrdinalIgnoreCase)
         {
+            // HIDMaestro Xbox/DirectInput mapping used by VirtualController:
+            // X   = steering
+            // Z   = left trigger  = brake
+            // RZ  = right trigger = throttle
+            // SL1 = clutch
             ["j_steer"] = "joy.x",
-            ["j_throttle"] = "joy.rx",
-            ["j_brake"] = "joy.ry",
+            ["j_throttle"] = "joy.rz",
+            ["j_brake"] = "joy.z",
             ["j_clutch"] = "joy.sl1"
         };
 
