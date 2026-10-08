@@ -47,9 +47,12 @@ public class MainActivity extends Activity implements SensorEventListener {
     // position.
     float latestGyroZ = 0f;
     long lowRateSinceNs = 0;
-    static final float BIAS_STILL_RATE_DEG_PER_SEC = 0.75f;
-    static final long BIAS_STILL_TIME_MS = 900L;
-    static final float BIAS_TAU_SECONDS = 6.0f;
+    long lastReferenceSampleNs = 0L;
+    float lastReferenceMotionDeg = 0f;
+    static final float BIAS_STILL_RATE_DEG_PER_SEC = 0.55f;
+    static final float BIAS_REFERENCE_RATE_DEG_PER_SEC = 0.45f;
+    static final long BIAS_STILL_TIME_MS = 700L;
+    static final float BIAS_TAU_SECONDS = 2.5f;
 
     // Fixed calibration reference for GYRO WHEEL.
     // When CALIBRATE is pressed, the current full rotation-vector quaternion is
@@ -169,9 +172,31 @@ public class MainActivity extends Activity implements SensorEventListener {
                 float gyroRateDeg = (float)Math.toDegrees(e.values[2] - gyroBias);
                 float absRate = Math.abs(gyroRateDeg);
 
-                // Estimate only a tiny gyro-rate bias while the phone is truly
-                // settled. This does not redefine the current steering angle.
-                if (absRate <= BIAS_STILL_RATE_DEG_PER_SEC) {
+                // Use all three gyro axes for stationary detection. Looking only
+                // at Z can mistake phone vibration/X-Y movement for a valid
+                // zero-rate sample and slowly corrupt the Z bias.
+                float rawRateMagnitudeDeg = (float)Math.toDegrees(
+                        Math.sqrt(e.values[0] * e.values[0] +
+                                  e.values[1] * e.values[1] +
+                                  e.values[2] * e.values[2]));
+
+                // Reference motion must also be quiet before bias learning is
+                // allowed. This prevents slow intentional steering from being
+                // learned as sensor bias.
+                boolean referenceStill = true;
+                if (currentQuaternion != null && lastReferenceSampleNs != 0L &&
+                        e.timestamp > lastReferenceSampleNs) {
+                    float refRate = lastReferenceMotionDeg * 1_000_000_000f /
+                            (e.timestamp - lastReferenceSampleNs);
+                    referenceStill = refRate <= BIAS_REFERENCE_RATE_DEG_PER_SEC;
+                }
+
+                boolean phoneStill = rawRateMagnitudeDeg <= BIAS_STILL_RATE_DEG_PER_SEC
+                        && referenceStill;
+
+                // Learn only the rate bias. Never change the current steering
+                // angle just because the phone is being held still.
+                if (phoneStill) {
                     if (lowRateSinceNs == 0) lowRateSinceNs = e.timestamp;
                     if ((e.timestamp - lowRateSinceNs) >= BIAS_STILL_TIME_MS * 1_000_000L) {
                         float alpha = 1f - (float)Math.exp(-dt / BIAS_TAU_SECONDS);
@@ -250,6 +275,13 @@ public class MainActivity extends Activity implements SensorEventListener {
 
             float[] q = new float[4];
             SensorManager.getQuaternionFromVector(q, e.values);
+            if (currentQuaternion != null && lastReferenceSampleNs != 0L &&
+                    e.timestamp > lastReferenceSampleNs) {
+                lastReferenceMotionDeg = quaternionAngleBetween(currentQuaternion, q);
+            } else {
+                lastReferenceMotionDeg = 0f;
+            }
+            lastReferenceSampleNs = e.timestamp;
             currentQuaternion = q;
 
             // The first reference sample after app start is only a temporary
@@ -394,6 +426,8 @@ public class MainActivity extends Activity implements SensorEventListener {
         gyroBias = latestGyroZ;
         lowRateSinceNs = 0;
         lastGyroNs = 0;
+        lastReferenceSampleNs = 0L;
+        lastReferenceMotionDeg = 0f;
 
         gyroCorrectionOffset = 0f;
         targetCorrectionOffset = 0f;
