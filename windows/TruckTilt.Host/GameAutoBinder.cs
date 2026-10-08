@@ -401,7 +401,9 @@ internal static class GameAutoBinder
         string pattern =
             @"(?m)^(?<prefix>\s*config_lines\[\d+\]:\s*""device\s+joy\s+)`[^`]*`(?<suffix>""\s*)$";
 
-        return Regex.Replace(
+        int localChanged = 0;
+
+        string result = Regex.Replace(
             text,
             pattern,
             m =>
@@ -411,11 +413,14 @@ internal static class GameAutoBinder
                                   m.Groups["suffix"].Value;
 
                 if (!current.Equals(newLine, StringComparison.Ordinal))
-                    changed++;
+                    localChanged++;
 
                 return newLine;
             },
             1);
+
+        changed += localChanged;
+        return result;
     }
 
     private static void ReplaceInputAlias(
@@ -428,6 +433,8 @@ internal static class GameAutoBinder
         string pattern =
             $@"(?m)^(?<prefix>\s*config_lines\[\d+\]:\s*""input\s+{Regex.Escape(alias)}\s+)`[^`]*`(?<suffix>""\s*)$";
 
+        int localChanged = 0;
+
         result = Regex.Replace(
             currentText,
             pattern,
@@ -437,11 +444,13 @@ internal static class GameAutoBinder
                                  m.Groups["suffix"].Value;
 
                 if (!m.Value.Equals(newLine, StringComparison.Ordinal))
-                    changed++;
+                    localChanged++;
 
                 return newLine;
             },
             1);
+
+        changed += localChanged;
     }
 
     private static void AddButtonToMix(
@@ -452,6 +461,8 @@ internal static class GameAutoBinder
     {
         string pattern =
             $@"(?m)^(?<prefix>\s*config_lines\[\d+\]:\s*""mix\s+{Regex.Escape(mixName)}\s+)`(?<expr>[^`]*)`(?<suffix>""\s*)$";
+
+        int localChanged = 0;
 
         text = Regex.Replace(
             text,
@@ -483,11 +494,13 @@ internal static class GameAutoBinder
                     newExpr = expr.TrimEnd() + " | " + input + "?0";
                 }
 
-                changed++;
+                localChanged++;
                 return m.Groups["prefix"].Value + "`" + newExpr + "`" +
                        m.Groups["suffix"].Value;
             },
             1);
+
+        changed += localChanged;
     }
 
     private static void ReplaceOrAddConstant(
@@ -499,6 +512,8 @@ internal static class GameAutoBinder
         string pattern =
             $@"(?m)^(?<prefix>\s*config_lines\[\d+\]:\s*""constant\s+{Regex.Escape(name)}\s+)[^""]*(?<suffix>""\s*)$";
 
+        int localChanged = 0;
+
         string replaced = Regex.Replace(
             text,
             pattern,
@@ -508,11 +523,13 @@ internal static class GameAutoBinder
                                   m.Groups["suffix"].Value;
 
                 if (!m.Value.Equals(newLine, StringComparison.Ordinal))
-                    changed++;
+                    localChanged++;
 
                 return newLine;
             },
             1);
+
+        changed += localChanged;
 
         if (replaced != text)
         {
