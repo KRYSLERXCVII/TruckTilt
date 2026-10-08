@@ -25,6 +25,9 @@ internal sealed class TelemetryHaptics : IDisposable
     private const int SubstanceNamesOffset = 4400;
     private const int SubstanceNameSize = 64;
     private const int PollMs = 50;
+    // Give ETS2/ATS telemetry time to settle when entering the cockpit.
+    // During this window we establish baselines but emit no telemetry-driven haptics.
+    private const int StartupGraceMs = 2000;
 
     private readonly Action<string> _sendHaptic;
     private readonly CancellationTokenSource _cts = new();
@@ -43,6 +46,8 @@ internal sealed class TelemetryHaptics : IDisposable
     private bool _mapStatusLogged;
     private bool _activeStatusLogged;
     private DateTime _lastWaitingLog = DateTime.MinValue;
+    private DateTime _telemetryActiveSince = DateTime.MinValue;
+    private bool _startupBaselineReady;
 
     public TelemetryHaptics(Action<string> sendHaptic) => _sendHaptic = sendHaptic;
 
@@ -74,6 +79,8 @@ internal sealed class TelemetryHaptics : IDisposable
                     {
                         Console.WriteLine("HAPTICS: telemetry active.");
                         _activeStatusLogged = true;
+                        _telemetryActiveSince = DateTime.UtcNow;
+                        _startupBaselineReady = false;
                     }
                     ProcessSnapshot();
                 }
@@ -129,6 +136,36 @@ internal sealed class TelemetryHaptics : IDisposable
         float rpm = ReadFloat(EngineRpmOffset);
         float rpmMax = ReadFloat(EngineRpmMaxOffset);
         bool engineEnabled = ReadByte(EngineEnabledOffset) != 0;
+
+        // ETS2/ATS can briefly publish transitional/default telemetry when the
+        // cockpit is first entered. Treat those values as the initial baseline.
+        // This prevents startup RPM/surface/gear transitions from becoming an
+        // unwanted burst of phone vibration.
+        if (!_startupBaselineReady)
+        {
+            if (_telemetryActiveSince == DateTime.MinValue)
+                _telemetryActiveSince = DateTime.UtcNow;
+
+            if ((DateTime.UtcNow - _telemetryActiveSince).TotalMilliseconds < StartupGraceMs)
+            {
+                _engineStateKnown = true;
+                _lastEngineEnabled = engineEnabled;
+                _lastGear = gear;
+                _shiftLatched = false;
+                _offRoadLatched = false;
+                SendRumbleStop();
+                return;
+            }
+
+            _startupBaselineReady = true;
+            _engineStateKnown = true;
+            _lastEngineEnabled = engineEnabled;
+            _lastGear = gear;
+            _shiftLatched = false;
+            _offRoadLatched = false;
+            SendRumbleStop();
+            return;
+        }
 
         // Engine start/stop. The initial state is silent so connecting to a
         // running truck does not create a false start vibration.
@@ -288,6 +325,8 @@ internal sealed class TelemetryHaptics : IDisposable
         _lastGear = int.MinValue;
         _engineStateKnown = false;
         _lastEngineEnabled = false;
+        _telemetryActiveSince = DateTime.MinValue;
+        _startupBaselineReady = false;
     }
 
     private void CloseMap()
