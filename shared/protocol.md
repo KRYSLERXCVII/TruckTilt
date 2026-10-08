@@ -1,4 +1,4 @@
-# TruckTilt UDP Protocol v0.7.4
+# TruckTilt UDP Protocol v0.12
 
 Port: `45454`
 
@@ -28,15 +28,19 @@ Phone sends at approximately 62 Hz:
 
 There are exactly 32 independent digital button fields after the five analog axes.
 
-Analog values:
+## Haptics
 
-- `steering`: `-1.0 .. +1.0`
-- `throttle`: `0.0 .. 1.0`
-- `brake`: `0.0 .. 1.0`
-- `clutch`: `0.0 .. 1.0`
-- `retarder`: `0.0 .. 1.0`
+Windows may send asynchronous haptic events to the connected phone:
 
-Buttons are `0` or `1` and map one-to-one to HID button indices 1–32.
+`HAPTIC|1` — short gear-shift reminder pulse.
+
+`HAPTIC|2` — short rough/off-road rumble pulse.
+
+The Android app ignores these events when the single **Haptics OFF** switch is selected.
+
+## Telemetry
+
+The Windows host optionally reads the SCS telemetry shared-memory map named `Local\\SCSTelemetry`. If telemetry is unavailable, TruckTilt continues operating normally and simply sends no automatic haptic events.
 
 ## Ping
 
@@ -51,18 +55,3 @@ Windows replies:
 ## Safety
 
 The Windows host neutralizes all axes and releases all 32 buttons when no valid input packet has been received for more than 500 ms.
-
-## Virtual device
-
-The Windows host does **not** create an Xbox/XInput controller.
-
-It creates a custom HID/DirectInput-style steering wheel:
-
-- Steering — signed 16-bit simulation-control axis
-- Throttle — 16-bit simulation-control axis
-- Brake — 16-bit simulation-control axis
-- Clutch — 16-bit simulation-control axis
-- Retarder — 16-bit slider axis
-- 32 independent buttons
-- 8-way hat
-- PID force-feedback interface

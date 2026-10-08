@@ -7,7 +7,7 @@ const int Port = 45454;
 const int TimeoutMs = 500;
 
 Console.Title = "TruckTilt Host";
-Console.WriteLine("TruckTilt Host v0.7.4.4 — ETS2 DirectInput Wheel");
+Console.WriteLine("TruckTilt Host v0.12.0 — ETS2 DirectInput Wheel");
 Console.WriteLine("================================================");
 Console.WriteLine($"Listening for TruckTilt phones on UDP {Port}");
 Console.WriteLine("Device: TruckTilt Virtual Steering Wheel (DirectInput/HID)");
@@ -37,7 +37,21 @@ catch (Exception ex)
 // profile. No game-selection button or setup wizard is required.
 GameAutoBinder.Start();
 
+IPEndPoint? phoneEndpoint = null;
 using var udp = new UdpClient(Port) { EnableBroadcast = true };
+using var telemetryHaptics = new TelemetryHaptics(message =>
+{
+    try
+    {
+        var endpoint = phoneEndpoint;
+        if (endpoint is null) return;
+        byte[] data = Encoding.UTF8.GetBytes(message);
+        udp.Send(data, data.Length, endpoint);
+    }
+    catch { }
+});
+telemetryHaptics.Start();
+Console.WriteLine("HAPTICS: telemetry reader started (optional SCSTelemetry shared memory).");
 var state = InputState.Neutral;
 var lastPacket = DateTime.UtcNow;
 var lastEndpoint = "";
@@ -135,7 +149,8 @@ _ = Task.Run(async () =>
             }
             else if (message.StartsWith("CONNECT|", StringComparison.OrdinalIgnoreCase))
             {
-                response = Encoding.UTF8.GetBytes($"WELCOME|{Environment.MachineName}|0.7.4.2");
+                phoneEndpoint = result.RemoteEndPoint;
+                response = Encoding.UTF8.GetBytes($"WELCOME|{Environment.MachineName}|0.12.0");
                 Console.WriteLine($"CONNECTED {result.RemoteEndPoint}");
             }
             else if (message.StartsWith("PING|", StringComparison.OrdinalIgnoreCase))
@@ -158,6 +173,7 @@ _ = Task.Run(async () =>
                 Interlocked.Increment(ref receivedPackets);
                 if (InputState.TryParse(message, out var parsed))
                 {
+                    phoneEndpoint = result.RemoteEndPoint;
                     lock (sync)
                     {
                         state = parsed;

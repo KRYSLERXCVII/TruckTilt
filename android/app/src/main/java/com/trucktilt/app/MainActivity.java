@@ -2,6 +2,9 @@ package com.trucktilt.app;
 
 import android.app.Activity;
 import android.os.Bundle;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import android.os.VibratorManager;
 import android.content.Context;
 import android.content.Intent;
 import android.net.Uri;
@@ -27,6 +30,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     static final int INPUT_INTERVAL_MS = 16;
     // Change this to your exact Buy Me a Coffee page if your username differs.
     static final String DONATE_URL = "https://buymeacoffee.com/kryslerxcvii";
+    static final String HAPTIC_PREFS = "trucktilt_haptics";
 
     ControllerView view;
     SensorManager sensors;
@@ -124,6 +128,38 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     @Override public void onAccuracyChanged(Sensor s, int a) {}
+
+    boolean isHapticsEnabled() {
+        return getSharedPreferences(HAPTIC_PREFS, MODE_PRIVATE).getBoolean("enabled", true);
+    }
+
+    void setHapticsEnabled(boolean enabled) {
+        getSharedPreferences(HAPTIC_PREFS, MODE_PRIVATE).edit().putBoolean("enabled", enabled).apply();
+        if (view != null) view.invalidate();
+    }
+
+    void performHaptic(int type) {
+        if (!isHapticsEnabled()) return;
+        try {
+            long[] timings;
+            int[] amplitudes;
+            if (type == 2) { // rough/off-road rumble
+                timings = new long[]{0, 22, 34, 18, 42};
+                amplitudes = new int[]{0, 55, 0, 40, 0};
+            } else { // crisp shift reminder
+                timings = new long[]{0, 24};
+                amplitudes = new int[]{0, 75};
+            }
+            if (android.os.Build.VERSION.SDK_INT >= 31) {
+                VibratorManager vm = (VibratorManager)getSystemService(VIBRATOR_MANAGER_SERVICE);
+                Vibrator v = vm.getDefaultVibrator();
+                if (v != null && v.hasVibrator()) v.vibrate(VibrationEffect.createWaveform(timings, amplitudes, -1));
+            } else {
+                Vibrator v = (Vibrator)getSystemService(VIBRATOR_SERVICE);
+                if (v != null && v.hasVibrator()) v.vibrate(VibrationEffect.createWaveform(timings, amplitudes, -1));
+            }
+        } catch (Throwable ignored) {}
+    }
 
     void openDonate() {
         try {
@@ -231,7 +267,8 @@ public class MainActivity extends Activity implements SensorEventListener {
             c.drawRect(0,0,w,58,p);
             // Clean, light branding: keep the creator/version secondary to the app name.
             text(c,"TRUCKTILT",20,37,20,Color.WHITE,Paint.Align.LEFT);
-            text(c,"by KRYSLERXCVII  •  v0.11.6",136,37,15,Color.rgb(205,212,220),Paint.Align.LEFT);
+            text(c,"by KRYSLERXCVII  •  v0.12.0",136,37,15,Color.rgb(205,212,220),Paint.Align.LEFT);
+            button(c, isHapticsEnabled() ? "HAPTICS ON" : "HAPTICS OFF", 435, 29, 116, 34, isHapticsEnabled());
 
             // Prominent support button: red only for the donation CTA so it is
             // immediately discoverable without overpowering the cockpit.
@@ -543,6 +580,10 @@ public class MainActivity extends Activity implements SensorEventListener {
                     return true;
                 }
 
+                if(hit("HAPTICS ON",x,y) || hit("HAPTICS OFF",x,y)){
+                    setHapticsEnabled(!isHapticsEnabled());
+                    return true;
+                }
                 if(hit("DONATE",x,y)){ openDonate(); return true; }
                 if(hit("MODE",x,y)){ mode=(mode+1)%3; invalidate(); return true; }
                 if(hit(rangeDeg+"°",x,y)){ cycleRange(); invalidate(); return true; }

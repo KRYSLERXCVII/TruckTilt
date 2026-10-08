@@ -1,4 +1,4 @@
-# ETS2 / ATS setup — TruckTilt v0.7.4.2
+# ETS2 / ATS setup — TruckTilt v0.12.0
 
 1. Run `TruckTilt.Host.exe` as Administrator.
 2. Confirm the console prints the available axes and that it creates `TruckTilt Virtual Steering Wheel`.
