@@ -41,27 +41,34 @@ public class MainActivity extends Activity implements SensorEventListener {
     float gyroAngle = 0f, gyroBias = 0f, tiltAngle = 0f;
     float gyroRawAngle = 0f;
 
-    // Gyro-wheel drift correction. Gyro remains the primary steering sensor.
-    // Rotation-vector is an independent reference used only after a meaningful
-    // rotation episode has settled. It never continuously redefines steering.
-    float referenceAngle = 0f;
-    float referenceRaw = Float.NaN;
-    boolean referenceReady = false;
-    long lastReferenceNs = 0;
-    long lastGyroNs = 0;
+    // Gyro-rate bias estimation is deliberately conservative. It is used only
+    // to reduce a tiny sensor bias; it never recenters a deliberate steering
+    // position.
+    float latestGyroZ = 0f;
+    long lowRateSinceNs = 0;
+    static final float BIAS_STILL_RATE_DEG_PER_SEC = 0.75f;
+    static final long BIAS_STILL_TIME_MS = 900L;
+    static final float BIAS_TAU_SECONDS = 6.0f;
 
-    boolean rotationEpisodeActive = false;
+    // Fixed calibration reference for GYRO WHEEL.
+    // When CALIBRATE is pressed, the current full rotation-vector quaternion is
+    // saved as the physical 0-degree orientation. The reference never follows
+    // the steering angle. It is only used to recognize when the phone has
+    // physically returned to that original orientation after a large rotation.
+    float[] calibrationQuaternion = null;
+    float[] currentQuaternion = null;
+    boolean referenceCalibrationReady = false;
+    boolean referenceReturnCandidate = false;
     long lastMeaningfulRotationNs = 0;
-    float episodeGyroStart = 0f;
-    float episodeReferenceStart = 0f;
+    long referenceNearSinceNs = 0;
     float gyroCorrectionOffset = 0f;
     float targetCorrectionOffset = 0f;
 
     static final float ROTATION_START_DEG_PER_SEC = 12f;
-    static final long ROTATION_SETTLE_MS = 180L;
-    static final float MAX_EPISODE_CORRECTION_DEG = 18f;
-    static final float CORRECTION_SMOOTHING = 0.12f;
-
+    static final long REFERENCE_SETTLE_MS = 220L;
+    static final float REFERENCE_RETURN_THRESHOLD_DEG = 7f;
+    static final float MAX_REFERENCE_CORRECTION_DEG = 20f;
+    static final float REFERENCE_CORRECTION_STEP = 0.10f;
 
 
 
@@ -157,63 +164,79 @@ public class MainActivity extends Activity implements SensorEventListener {
             lastGyroNs = e.timestamp;
 
             if (dt > 0 && dt < .2f) {
+                latestGyroZ = e.values[2];
                 float gyroRateDeg = (float)Math.toDegrees(e.values[2] - gyroBias);
                 float absRate = Math.abs(gyroRateDeg);
 
-                // Integrate the gyro into a raw angle first. The correction is
-                // kept separately so it can never become a new zero point.
+                // Estimate only a tiny gyro-rate bias while the phone is truly
+                // settled. This does not redefine the current steering angle.
+                if (absRate <= BIAS_STILL_RATE_DEG_PER_SEC) {
+                    if (lowRateSinceNs == 0) lowRateSinceNs = e.timestamp;
+                    if ((e.timestamp - lowRateSinceNs) >= BIAS_STILL_TIME_MS * 1_000_000L) {
+                        float alpha = 1f - (float)Math.exp(-dt / BIAS_TAU_SECONDS);
+                        gyroBias += (e.values[2] - gyroBias) * alpha;
+                    }
+                } else {
+                    lowRateSinceNs = 0;
+                }
+
+                // Gyroscope remains the sole fast steering sensor.
                 gyroRawAngle -= gyroRateDeg * dt;
 
-                if (view != null && view.mode == 0 && referenceReady) {
-                    long nowNs = e.timestamp;
-
-                    // A movement episode begins only after meaningful rotation.
-                    // Small steering corrections below this threshold are left
-                    // entirely alone.
+                if (view != null && view.mode == 0 && referenceCalibrationReady) {
+                    // A large rotation marks a possible return-to-calibration
+                    // event. Small 3-5 degree highway corrections are ignored.
                     if (absRate >= ROTATION_START_DEG_PER_SEC) {
-                        if (!rotationEpisodeActive) {
-                            rotationEpisodeActive = true;
-                            episodeGyroStart = gyroRawAngle;
-                            episodeReferenceStart = referenceAngle;
-                        }
-                        lastMeaningfulRotationNs = nowNs;
-                    } else if (rotationEpisodeActive &&
-                            lastMeaningfulRotationNs != 0 &&
-                            (nowNs - lastMeaningfulRotationNs) >= ROTATION_SETTLE_MS * 1_000_000L) {
-                        // Compare the ROTATION DURING THIS EPISODE, not the
-                        // current absolute reference angle. This is the key
-                        // protection against a reference sensor slowly drifting
-                        // while the phone is simply being held still.
-                        float gyroDelta = gyroRawAngle - episodeGyroStart;
-                        float referenceDelta = referenceAngle - episodeReferenceStart;
-                        float episodeError = referenceDelta - gyroDelta;
-
-                        episodeError = clamp(episodeError,
-                                -MAX_EPISODE_CORRECTION_DEG,
-                                MAX_EPISODE_CORRECTION_DEG);
-
-                        // Accumulate only the measured integration error. Never
-                        // set steering directly to the reference sensor.
-                        targetCorrectionOffset = clamp(
-                                targetCorrectionOffset + episodeError,
-                                -MAX_EPISODE_CORRECTION_DEG,
-                                MAX_EPISODE_CORRECTION_DEG);
-
-                        rotationEpisodeActive = false;
-                        lastMeaningfulRotationNs = 0;
+                        referenceReturnCandidate = true;
+                        lastMeaningfulRotationNs = e.timestamp;
+                        referenceNearSinceNs = 0;
                     }
 
-                    // Smoothly apply the accumulated correction. The user sees
-                    // the normal gyro response; the correction is deliberately
-                    // gradual so a U-turn cannot produce a visible snap.
+                    // We only ask the fixed reference to correct the gyro when
+                    // the phone is physically back near the exact orientation
+                    // saved by CALIBRATE. The reference is NOT used as a live
+                    // steering target, so it cannot slowly drag a 30/60/90°
+                    // steering position toward a new zero.
+                    if (referenceReturnCandidate && currentQuaternion != null) {
+                        float referenceError = quaternionAngleBetween(
+                                currentQuaternion, calibrationQuaternion);
+
+                        if (referenceError <= REFERENCE_RETURN_THRESHOLD_DEG) {
+                            if (referenceNearSinceNs == 0) {
+                                referenceNearSinceNs = e.timestamp;
+                            }
+
+                            if ((e.timestamp - referenceNearSinceNs) >=
+                                    REFERENCE_SETTLE_MS * 1_000_000L &&
+                                    (e.timestamp - lastMeaningfulRotationNs) >=
+                                    REFERENCE_SETTLE_MS * 1_000_000L) {
+                                // At the calibrated physical orientation, the
+                                // correct gyro-wheel angle is 0°. Any remaining
+                                // gyro angle is accumulated integration error.
+                                float error = clamp(-gyroRawAngle,
+                                        -MAX_REFERENCE_CORRECTION_DEG,
+                                        MAX_REFERENCE_CORRECTION_DEG);
+                                targetCorrectionOffset = clamp(
+                                        -gyroRawAngle,
+                                        -MAX_REFERENCE_CORRECTION_DEG,
+                                        MAX_REFERENCE_CORRECTION_DEG);
+                                referenceReturnCandidate = false;
+                                referenceNearSinceNs = 0;
+                            }
+                        } else {
+                            referenceNearSinceNs = 0;
+                        }
+                    }
+
+                    // Smoothly move the correction offset. There is no direct
+                    // reference-angle steering, so the correction cannot snap
+                    // the wheel to an unrelated reference value.
                     gyroCorrectionOffset +=
-                            (targetCorrectionOffset - gyroCorrectionOffset) * CORRECTION_SMOOTHING;
+                            (targetCorrectionOffset - gyroCorrectionOffset) * REFERENCE_CORRECTION_STEP;
                 }
 
                 gyroAngle = gyroRawAngle + gyroCorrectionOffset;
 
-                // The selected steering range controls output travel only.
-                // The drift estimator itself is independent of 360/540/720/900/1080.
                 float half = view == null ? 450f : view.rangeDeg / 2f;
                 gyroAngle = clamp(gyroAngle, -half, half);
             }
@@ -224,23 +247,22 @@ public class MainActivity extends Activity implements SensorEventListener {
             SensorManager.getOrientation(r, o);
             float rawReference = (float)Math.toDegrees(o[2]);
 
-            if (!referenceReady || Float.isNaN(referenceRaw)) {
-                referenceRaw = rawReference;
-                referenceAngle = 0f;
-                referenceReady = true;
-                lastReferenceNs = e.timestamp;
-            } else {
-                float delta = MainActivity.normalizeDelta(rawReference - referenceRaw);
-                // Same steering sign convention as the gyro.
-                referenceAngle -= delta;
-                referenceRaw = rawReference;
-                lastReferenceNs = e.timestamp;
-            }
+            float[] q = new float[4];
+            SensorManager.getQuaternionFromVector(q, e.values);
+            currentQuaternion = q;
 
-            // Rotation-vector remains the tilt reference for GYRO TILT mode.
+            // The first reference sample after app start is only a temporary
+            // current orientation. CALIBRATE creates the actual fixed origin.
             tiltAngle = clamp(rawReference, -45f, 45f);
         }
         if (view != null) view.invalidate();
+    }
+
+    static float quaternionAngleBetween(float[] a, float[] b) {
+        if (a == null || b == null || a.length < 4 || b.length < 4) return 180f;
+        float dot = Math.abs(a[0]*b[0] + a[1]*b[1] + a[2]*b[2] + a[3]*b[3]);
+        dot = clamp(dot, -1f, 1f);
+        return (float)Math.toDegrees(2.0 * Math.acos(dot));
     }
 
     @Override public void onAccuracyChanged(Sensor s, int a) {}
@@ -364,24 +386,27 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     void calibrate() {
-        // Explicit calibration establishes the only true steering zero.
-        // Clear all episode/correction state so a previous turn cannot affect
-        // the new calibration. The next rotation-vector sample establishes
-        // the reference orientation at this calibration point.
+        // CALIBRATE defines a FIXED physical reference orientation. It is not a
+        // moving target and it is never replaced automatically while driving.
         gyroAngle = 0f;
         gyroRawAngle = 0f;
-        gyroBias = 0f;
+        gyroBias = latestGyroZ;
+        lowRateSinceNs = 0;
         lastGyroNs = 0;
-        referenceAngle = 0f;
-        referenceRaw = Float.NaN;
-        referenceReady = false;
-        lastReferenceNs = 0;
-        rotationEpisodeActive = false;
-        lastMeaningfulRotationNs = 0;
-        episodeGyroStart = 0f;
-        episodeReferenceStart = 0f;
+
         gyroCorrectionOffset = 0f;
         targetCorrectionOffset = 0f;
+        referenceReturnCandidate = false;
+        lastMeaningfulRotationNs = 0;
+        referenceNearSinceNs = 0;
+
+        if (currentQuaternion != null) {
+            calibrationQuaternion = currentQuaternion.clone();
+            referenceCalibrationReady = true;
+        } else {
+            calibrationQuaternion = null;
+            referenceCalibrationReady = false;
+        }
 
         view.wheelAngleDeg = 0f;
         view.steer = 0f;
