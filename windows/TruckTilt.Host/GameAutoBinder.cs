@@ -162,7 +162,6 @@ internal static class GameAutoBinder
         Console.WriteLine(
             $"AUTO-BIND: {gameName} detected — TruckTilt configured ({changed} changes).");
         Console.WriteLine($"AUTO-BIND: Backup created: {Path.GetFileName(backupPath)}");
-        Console.WriteLine("AUTO-BIND: Changes are saved to the profile and will be used on the next game launch.");
     }
 
     private static Process? GetRunningGame()
@@ -363,16 +362,8 @@ internal static class GameAutoBinder
         foreach ((int button, string mix) in ButtonBindings)
             AddButtonToMix(ref text, mix, $"joy.b{button}", ref changed);
 
-        // TruckTilt exposes independent, non-centered pedal axes:
-        // Rx = throttle, Ry = brake, Slider = clutch.
-        // Tell SCS to treat those axes as independent 0..1-style axes.
+        // Separate axis configuration: TruckTilt has independent throttle/brake.
         ReplaceOrAddConstant(ref text, "c_jcombined", "0.000000", ref changed);
-        ReplaceOrAddConstant(ref text, "c_jzthrottle", "1.000000", ref changed);
-        ReplaceOrAddConstant(ref text, "c_jithrottle", "0.000000", ref changed);
-        ReplaceOrAddConstant(ref text, "c_jzbrake", "1.000000", ref changed);
-        ReplaceOrAddConstant(ref text, "c_jibrake", "0.000000", ref changed);
-        ReplaceOrAddConstant(ref text, "c_jzclutch", "1.000000", ref changed);
-        ReplaceOrAddConstant(ref text, "c_jiclutch", "0.000000", ref changed);
 
         if (text == original)
             return false;
@@ -404,11 +395,11 @@ internal static class GameAutoBinder
         string deviceAlias,
         ref int changed)
     {
-        string replacement = $"device joy `{deviceAlias}`";
-
+        // Keep this as one verbatim regex string. The previous version mixed
+        // escaped normal-string quotes with a verbatim string and produced
+        // CS1056/CS1002 in GitHub Actions.
         string pattern =
-            @"(?m)^(?<prefix>\s*config_lines\[\d+\]:\s*" +
-            "\"device\\s+joy\\s+)`[^`]*`(?<suffix>\" + "\"\\s*)$";
+            @"(?m)^(?<prefix>\s*config_lines\[\d+\]:\s*""device\s+joy\s+)`[^`]*`(?<suffix>""\s*)$";
 
         return Regex.Replace(
             text,
