@@ -39,7 +39,21 @@ public class MainActivity extends Activity implements SensorEventListener {
     SensorManager sensors;
     Sensor gyro, rotation;
     float gyroAngle = 0f, gyroBias = 0f, tiltAngle = 0f;
+
+    // Gyro-wheel drift compensation.
+    // The gyroscope remains the fast/primary steering sensor. The rotation-vector
+    // sensor is only a slow reference used to keep the integrated gyro angle from
+    // accumulating error after large rotations. It never recenters steering just
+    // because the phone is being held at a non-zero angle.
+    float referenceAngle = 0f;
+    float referenceRaw = Float.NaN;
+    boolean referenceReady = false;
+    long lastReferenceNs = 0;
     long lastGyroNs = 0;
+    float referenceCorrection = 0f;
+    static final float REFERENCE_PULL = 0.035f;
+    static final float MAX_REFERENCE_CORRECTION_DEG_PER_SEC = 28f;
+    static final float FAST_ROTATION_DEG_PER_SEC = 85f;
 
 
 
@@ -136,9 +150,25 @@ public class MainActivity extends Activity implements SensorEventListener {
             lastGyroNs = e.timestamp;
 
             if (dt > 0 && dt < .2f) {
-                // Gyroscope is the sole steering sensor in GYRO WHEEL mode.
-                // Do not automatically zero or correct the accumulated angle.
-                gyroAngle -= Math.toDegrees(e.values[2] - gyroBias) * dt;
+                // Gyroscope remains the primary, high-speed steering sensor.
+                float gyroRateDeg = (float)Math.toDegrees(e.values[2] - gyroBias);
+                gyroAngle -= gyroRateDeg * dt;
+
+                // Apply only a tiny, rate-limited pull toward the independent
+                // orientation reference. This corrects accumulated integration
+                // error without treating a held 30/60/90+ degree steering angle
+                // as drift. During a fast rotation the reference is deliberately
+                // ignored so it cannot fight the user's steering motion.
+                if (view != null && view.mode == 0 && referenceReady) {
+                    float referenceError = normalizeAngle(referenceAngle - gyroAngle);
+                    float absRate = Math.abs(gyroRateDeg);
+                    if (absRate < FAST_ROTATION_DEG_PER_SEC) {
+                        float correction = referenceError * REFERENCE_PULL;
+                        float maxCorrection = MAX_REFERENCE_CORRECTION_DEG_PER_SEC * dt;
+                        correction = clamp(correction, -maxCorrection, maxCorrection);
+                        gyroAngle += correction;
+                    }
+                }
 
                 // The selected steering range controls the actual virtual
                 // wheel travel: 360/540/720/900/1080 degrees.
@@ -150,9 +180,25 @@ public class MainActivity extends Activity implements SensorEventListener {
             SensorManager.getRotationMatrixFromVector(r, e.values);
             float[] o = new float[3];
             SensorManager.getOrientation(r, o);
+            float rawReference = (float)Math.toDegrees(o[2]);
 
-            // Rotation-vector remains available for GYRO TILT mode only.
-            tiltAngle = clamp((float)Math.toDegrees(o[2]), -45f, 45f);
+            // Keep a continuous/unwrapped reference so a 900° virtual wheel is
+            // not confused by the rotation-vector's normal -180°/+180° wrap.
+            if (!referenceReady || Float.isNaN(referenceRaw)) {
+                referenceRaw = rawReference;
+                referenceAngle = 0f;
+                referenceReady = true;
+            } else {
+                float delta = normalizeAngle(rawReference - referenceRaw);
+                // GYRO WHEEL uses the negative Z angular velocity convention.
+                // Mirror the rotation-vector delta so both sensors use the same
+                // steering direction.
+                referenceAngle -= delta;
+                referenceRaw = rawReference;
+            }
+
+            // Rotation-vector remains the tilt reference for GYRO TILT mode.
+            tiltAngle = clamp(rawReference, -45f, 45f);
         }
         if (view != null) view.invalidate();
     }
@@ -282,6 +328,11 @@ public class MainActivity extends Activity implements SensorEventListener {
         // No automatic recalibration happens while driving.
         gyroAngle = 0f;
         gyroBias = 0f;
+        referenceCorrection = 0f;
+        referenceReady = false;
+        referenceRaw = Float.NaN;
+        referenceAngle = 0f;
+        lastReferenceNs = 0;
         lastGyroNs = 0;
 
         view.wheelAngleDeg = 0f;
@@ -290,6 +341,12 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     static float clamp(float v, float a, float b) { return Math.max(a, Math.min(b, v)); }
+
+    static float normalizeAngle(float d) {
+        while (d > 180f) d -= 360f;
+        while (d < -180f) d += 360f;
+        return d;
+    }
 
     class ControllerView extends View {
         final Paint p = new Paint(3);
