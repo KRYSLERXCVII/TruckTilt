@@ -403,7 +403,7 @@ internal static class GameAutoBinder
 
         int localChanged = 0;
 
-        string result = Regex.Replace(
+        string result = new Regex(pattern).Replace(
             text,
             pattern,
             m =>
@@ -435,7 +435,7 @@ internal static class GameAutoBinder
 
         int localChanged = 0;
 
-        result = Regex.Replace(
+        result = new Regex(pattern).Replace(
             currentText,
             pattern,
             m =>
@@ -464,7 +464,7 @@ internal static class GameAutoBinder
 
         int localChanged = 0;
 
-        text = Regex.Replace(
+        text = new Regex(pattern).Replace(
             text,
             pattern,
             m =>
@@ -514,7 +514,7 @@ internal static class GameAutoBinder
 
         int localChanged = 0;
 
-        string replaced = Regex.Replace(
+        string replaced = new Regex(pattern).Replace(
             text,
             pattern,
             m =>
