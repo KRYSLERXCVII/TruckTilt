@@ -28,6 +28,7 @@ internal sealed class TelemetryHaptics : IDisposable
     // Give ETS2/ATS telemetry time to settle when entering the cockpit.
     // During this window we establish baselines but emit no telemetry-driven haptics.
     private const int StartupGraceMs = 2000;
+    private const int EngineTransitionDebounceMs = 200;
 
     private readonly Action<string> _sendHaptic;
     private readonly CancellationTokenSource _cts = new();
@@ -43,6 +44,8 @@ internal sealed class TelemetryHaptics : IDisposable
     private DateTime _lastRumbleSend = DateTime.MinValue;
     private bool _engineStateKnown;
     private bool _lastEngineEnabled;
+    private bool _pendingEngineState;
+    private DateTime _pendingEngineStateSince = DateTime.MinValue;
     private bool _mapStatusLogged;
     private bool _activeStatusLogged;
     private DateTime _lastWaitingLog = DateTime.MinValue;
@@ -169,15 +172,36 @@ internal sealed class TelemetryHaptics : IDisposable
 
         // Engine start/stop. The initial state is silent so connecting to a
         // running truck does not create a false start vibration.
+        //
+        // The telemetry value can flicker briefly while the game finishes
+        // switching into the cockpit. Debounce transitions so that a single
+        // real start/stop produces one haptic event instead of repeatedly
+        // restarting the vibration until another phone haptic happens to
+        // interrupt it.
         if (!_engineStateKnown)
         {
             _engineStateKnown = true;
             _lastEngineEnabled = engineEnabled;
+            _pendingEngineState = engineEnabled;
+            _pendingEngineStateSince = DateTime.UtcNow;
         }
         else if (engineEnabled != _lastEngineEnabled)
         {
-            _lastEngineEnabled = engineEnabled;
-            _sendHaptic(engineEnabled ? "HAPTIC|ENGINE_START" : "HAPTIC|ENGINE_STOP");
+            if (engineEnabled != _pendingEngineState)
+            {
+                _pendingEngineState = engineEnabled;
+                _pendingEngineStateSince = DateTime.UtcNow;
+            }
+            else if ((DateTime.UtcNow - _pendingEngineStateSince).TotalMilliseconds >= EngineTransitionDebounceMs)
+            {
+                _lastEngineEnabled = engineEnabled;
+                _sendHaptic(engineEnabled ? "HAPTIC|ENGINE_START" : "HAPTIC|ENGINE_STOP");
+            }
+        }
+        else
+        {
+            _pendingEngineState = engineEnabled;
+            _pendingEngineStateSince = DateTime.UtcNow;
         }
 
         // Gear change: a mechanical double pulse.
@@ -210,23 +234,19 @@ internal sealed class TelemetryHaptics : IDisposable
             _shiftLatched = false;
         }
 
-        // Combine engine/drivetrain and road-surface rumble into one adaptive
-        // intensity so the phone never receives competing rumble commands.
-        int rumbleIntensity = 0;
-        if (engineEnabled && rpmMax > 100f)
-        {
-            float rpmRatio = Math.Clamp(rpm / rpmMax, 0f, 1f);
-            rumbleIntensity = rpmRatio < 0.18f
-                ? 0
-                : (int)Math.Clamp(18f + rpmRatio * 42f, 18f, 60f);
-        }
-
-        int offRoadIntensity = GetPoweredWheelSurfaceIntensity();
-        _offRoadLatched = offRoadIntensity > 0;
-        rumbleIntensity = Math.Max(rumbleIntensity, offRoadIntensity);
+        // Continuous rumble is reserved for the ROAD SURFACE.
+        //
+        // Previously this also used engine RPM. That meant an idling truck
+        // sitting still could continuously vibrate the phone, and the engine
+        // rumble would remain present even after leaving gravel and returning
+        // to asphalt. Engine start/stop is handled as a discrete event above;
+        // road rumble is now completely independent and stops as soon as all
+        // powered wheels report a normal road surface.
+        int rumbleIntensity = GetPoweredWheelSurfaceIntensity();
+        _offRoadLatched = rumbleIntensity > 0;
 
         if (rumbleIntensity > 0)
-            SendRumbleIfChanged(rumbleIntensity, 100);
+            SendRumbleIfChanged(rumbleIntensity, 50);
         else
             SendRumbleStop();
     }
@@ -259,6 +279,9 @@ internal sealed class TelemetryHaptics : IDisposable
         if (wheelCount <= 0) wheelCount = 16;
 
         int strongest = 0;
+        int poweredOnGround = 0;
+        int roughPoweredOnGround = 0;
+
         for (int i = 0; i < wheelCount; i++)
         {
             bool powered = ReadByte(PoweredWheelsOffset + i) != 0;
@@ -266,16 +289,24 @@ internal sealed class TelemetryHaptics : IDisposable
 
             bool onGround = ReadByte(WheelOnGroundOffset + i) != 0;
             if (!onGround) continue;
+            poweredOnGround++;
 
             uint substance = ReadUInt32(WheelSubstanceOffset + i * 4);
             if (substance >= 25) continue;
 
             string name = ReadString(SubstanceNamesOffset + checked((int)substance * SubstanceNameSize));
             int intensity = SurfaceIntensity(name);
+            if (intensity > 0) roughPoweredOnGround++;
             if (intensity > strongest) strongest = intensity;
         }
 
-        return strongest;
+        // Require every powered wheel that is currently on the ground to be
+        // reporting a known rough surface. This prevents one stale wheel
+        // substance value from keeping the phone vibrating after the truck
+        // has returned to normal asphalt.
+        return poweredOnGround > 0 && roughPoweredOnGround == poweredOnGround
+            ? strongest
+            : 0;
     }
 
     private static int SurfaceIntensity(string name)
@@ -288,7 +319,11 @@ internal sealed class TelemetryHaptics : IDisposable
         if (n.Contains("dirt") || n.Contains("mud") || n.Contains("sand")) return 78;
         if (n.Contains("grass") || n.Contains("ground") || n.Contains("field")) return 70;
         if (n.Contains("snow") || n.Contains("ice")) return 52;
-        return 48;
+
+        // Unknown materials are deliberately silent. It is safer to miss a
+        // new surface than to classify normal asphalt/road telemetry as a
+        // rough surface and leave the rumble running.
+        return 0;
     }
 
     private static bool IsRoadSurface(string name)
@@ -325,6 +360,8 @@ internal sealed class TelemetryHaptics : IDisposable
         _lastGear = int.MinValue;
         _engineStateKnown = false;
         _lastEngineEnabled = false;
+        _pendingEngineState = false;
+        _pendingEngineStateSince = DateTime.MinValue;
         _telemetryActiveSince = DateTime.MinValue;
         _startupBaselineReady = false;
     }
