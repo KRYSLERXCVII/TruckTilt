@@ -681,7 +681,17 @@ public class MainActivity extends Activity implements SensorEventListener {
                 }
 
                 for(int i=0;i<32;i++) {
-                    if(hit("B"+i,x,y)) { buttons[i]=true; pointerControls.put(pointerId,"B"+i); invalidate(); return true; }
+                    if(hit("B"+i,x,y)) {
+                        buttons[i]=true;
+                        pointerControls.put(pointerId,"B"+i);
+                        // Short, device-appropriate click feedback for every cockpit button.
+                        // It is controlled by the single HAPTICS ON/OFF setting.
+                        if(hapticsEnabled) {
+                            performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY);
+                        }
+                        invalidate();
+                        return true;
+                    }
                 }
                 return true;
             }
@@ -1010,7 +1020,12 @@ public class MainActivity extends Activity implements SensorEventListener {
                         host=p.getAddress(); hostPort=p.getPort(); connected=true;
                         sendRaw("CONNECT|"+android.os.Build.MODEL,host,hostPort);
                     } else if(s.startsWith("WELCOME|")) connected=true;
-                    else if(s.startsWith("PONG|")){
+                    else if(s.startsWith("HAPTIC|")){
+                        // Haptics are sent asynchronously by the Windows host.
+                        // Keep them on the same UDP connection as controller data.
+                        String payload = s.substring(7).trim();
+                        if(!payload.isEmpty()) handleHapticMessage(payload);
+                    } else if(s.startsWith("PONG|")){
                         try{ long sent=Long.parseLong(s.substring(5).trim()); rttMs=(int)Math.max(0,System.currentTimeMillis()-sent); }
                         catch(Exception ignored){}
                     }
