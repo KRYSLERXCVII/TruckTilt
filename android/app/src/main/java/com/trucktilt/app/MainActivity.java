@@ -949,14 +949,27 @@ public class MainActivity extends Activity implements SensorEventListener {
                     if(s.startsWith("HELLO|TruckTilt|")){
                         host=p.getAddress(); hostPort=p.getPort(); connected=true;
                         sendRaw("CONNECT|"+android.os.Build.MODEL,host,hostPort);
-                    } else if(s.startsWith("WELCOME|")) connected=true;
-                    else if(s.startsWith("PONG|")){
+                    } else if(s.startsWith("WELCOME|")) {
+                        connected=true;
+                    } else if(s.startsWith("HAPTIC|")){
+                        // Windows telemetry sends asynchronous haptic events to the
+                        // phone over the same UDP connection used for controller data.
+                        try {
+                            int type = Integer.parseInt(s.substring(7).trim());
+                            postHaptic(type);
+                        } catch(Exception ignored) {}
+                    } else if(s.startsWith("PONG|")){
                         try{ long sent=Long.parseLong(s.substring(5).trim()); rttMs=(int)Math.max(0,System.currentTimeMillis()-sent); }
                         catch(Exception ignored){}
                     }
                     view.postInvalidate();
                 }
             }catch(Exception ignored){ connected=false; }
+        }
+
+        void postHaptic(int type){
+            // Keep vibration on the Android main thread for predictable device behavior.
+            runOnUiThread(() -> performHaptic(type));
         }
 
         void sendCurrentInput(ControllerView v){
