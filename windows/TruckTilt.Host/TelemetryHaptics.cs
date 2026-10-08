@@ -15,9 +15,9 @@ internal sealed class TelemetryHaptics : IDisposable
     private const int GearOffset = 500;
     private const int GearsOffset = 68;
     private const int WheelSubstanceOffset = 120;
-    private const int EngineRpmOffset = 704;
-    private const int EngineRpmMaxOffset = 736;
-    private const int PoweredWheelsOffset = 1598;
+    private const int EngineRpmOffset = 952;
+    private const int EngineRpmMaxOffset = 740;
+    private const int PoweredWheelsOffset = 1532;
     private const int WheelOnGroundOffset = 1590;
     private const int SubstanceNamesOffset = 4400;
     private const int SubstanceNameSize = 64;
@@ -29,6 +29,7 @@ internal sealed class TelemetryHaptics : IDisposable
     private bool _shiftLatched;
     private int _lastGear = int.MinValue;
     private bool _offRoadLatched;
+    private bool _telemetryLogged;
     private DateTime _lastOffRoadPulse = DateTime.MinValue;
     private MemoryMappedFile? _map;
     private MemoryMappedViewAccessor? _view;
@@ -53,9 +54,23 @@ internal sealed class TelemetryHaptics : IDisposable
                 }
 
                 if (!ReadByte(SdkActiveOffset).Equals(0))
+                {
+                    if (!_telemetryLogged)
+                    {
+                        Console.WriteLine("HAPTICS: SCSTelemetry shared memory connected.");
+                        _telemetryLogged = true;
+                    }
                     ProcessSnapshot();
+                }
                 else
+                {
+                    if (_telemetryLogged)
+                    {
+                        Console.WriteLine("HAPTICS: SCSTelemetry inactive.");
+                        _telemetryLogged = false;
+                    }
                     ResetState();
+                }
             }
             catch (OperationCanceledException) { break; }
             catch
@@ -185,6 +200,7 @@ internal sealed class TelemetryHaptics : IDisposable
         _shiftLatched = false;
         _offRoadLatched = false;
         _lastGear = int.MinValue;
+        _telemetryLogged = false;
     }
 
     private void CloseMap()
