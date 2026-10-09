@@ -23,7 +23,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * TruckTilt v0.9 — ultra-tight deadband gravity anchor.
+ * TruckTilt v0.9 — adaptive instant-settling baseline build.
  */
 public class MainActivity extends Activity implements SensorEventListener {
     static final int PORT = 45454;
@@ -148,8 +148,6 @@ public class MainActivity extends Activity implements SensorEventListener {
                 float rateDeg = (float)Math.toDegrees(rawZRateRad);
                 rawGyroIntegratedDeg -= rateDeg * dt;
 
-                // FIX 1: Turn Motion Invalidation.
-                // Do not allow gravity anchor to fight active hand movements.
                 float turnSpeedDegPerSec = Math.abs(rateDeg);
                 float motionFactor = Math.max(0f, 1.0f - (turnSpeedDegPerSec / 3.0f));
 
@@ -169,13 +167,14 @@ public class MainActivity extends Activity implements SensorEventListener {
                     if (normCalib > 0 && normCurr > 0) {
                         float cosTheta = clamp(dot / (normCalib * normCurr), -1f, 1f);
                         
-                        // FIX 2: Tight Deadband Power Curve (^32).
-                        // Evaluates to ~0.00 for turns > 5°, preventing fighting on minor steering turns.
+                        // Tight deadband power curve
                         float proximityWeight = (float)Math.pow(Math.max(0f, cosTheta), 32.0);
 
-                        // FIX 3: Ultra-soft convergence (0.02f * dt * 60f)
+                        // Dynamic settling rate: Fast convergence when stationary/near rest (0.15f), smooth when moving
+                        float settlingRate = (turnSpeedDegPerSec < 1.0f) ? 0.15f : 0.03f;
+
                         float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
-                        zeroCorrectionOffset += currentError * (proximityWeight * motionFactor * 0.02f * (dt * 60f));
+                        zeroCorrectionOffset += currentError * (proximityWeight * motionFactor * settlingRate * (dt * 60f));
                     }
                 }
 
