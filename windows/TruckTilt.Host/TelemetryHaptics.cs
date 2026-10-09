@@ -35,8 +35,7 @@ internal sealed class TelemetryHaptics : IDisposable
     private const int StartupGraceMs = 2000;
     private const int EngineTransitionDebounceMs = 200;
     private const int SteeringDiagnosticIntervalMs = 1000;
-    private static readonly bool SteeringDiagnosticsEnabled =
-        string.Equals(Environment.GetEnvironmentVariable("TRUCKTILT_STEERING_DIAGNOSTICS"), "1", StringComparison.Ordinal);
+    private static readonly bool SteeringDiagnosticsEnabled = true;
 
     private readonly Action<string> _sendHaptic;
     private readonly CancellationTokenSource _cts = new();
