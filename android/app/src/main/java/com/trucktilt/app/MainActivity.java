@@ -23,7 +23,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * TruckTilt v0.9 — smooth gravity potential anchor.
+ * TruckTilt v0.9 — ultra-tight deadband gravity anchor.
  */
 public class MainActivity extends Activity implements SensorEventListener {
     static final int PORT = 45454;
@@ -37,7 +37,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     float gyroAngle = 0f, tiltAngle = 0f;
     long lastGyroNs = 0L;
 
-    // Seamless Physical Baseline Anchoring
+    // Physical Baseline & Gravity Deadband Tracking
     float[] calibrationGravity = null;
     float[] currentGravity = null;
     float rawGyroIntegratedDeg = 0f;
@@ -144,11 +144,16 @@ public class MainActivity extends Activity implements SensorEventListener {
             lastGyroNs = e.timestamp;
 
             if (dt > 0 && dt < 0.2f) {
-                float rateDeg = (float)Math.toDegrees(e.values[2]);
+                float rawZRateRad = e.values[2];
+                float rateDeg = (float)Math.toDegrees(rawZRateRad);
                 rawGyroIntegratedDeg -= rateDeg * dt;
 
-                // Continuous Proportional Gravity Correction Loop
-                if (calibrationGravity != null && currentGravity != null) {
+                // FIX 1: Turn Motion Invalidation.
+                // Do not allow gravity anchor to fight active hand movements.
+                float turnSpeedDegPerSec = Math.abs(rateDeg);
+                float motionFactor = Math.max(0f, 1.0f - (turnSpeedDegPerSec / 3.0f));
+
+                if (calibrationGravity != null && currentGravity != null && motionFactor > 0.01f) {
                     float dot = (calibrationGravity[0]*currentGravity[0] + 
                                  calibrationGravity[1]*currentGravity[1] + 
                                  calibrationGravity[2]*currentGravity[2]);
@@ -164,12 +169,13 @@ public class MainActivity extends Activity implements SensorEventListener {
                     if (normCalib > 0 && normCurr > 0) {
                         float cosTheta = clamp(dot / (normCalib * normCurr), -1f, 1f);
                         
-                        // Proximity weight: W=1.0 at physical calibration posture, drops smoothly to 0.0 during turns
-                        float proximityWeight = (float)Math.pow(Math.max(0f, cosTheta), 4.0);
+                        // FIX 2: Tight Deadband Power Curve (^32).
+                        // Evaluates to ~0.00 for turns > 5°, preventing fighting on minor steering turns.
+                        float proximityWeight = (float)Math.pow(Math.max(0f, cosTheta), 32.0);
 
-                        // Asymptotically pull offset back to calibrated zero without jumps or snaps
+                        // FIX 3: Ultra-soft convergence (0.02f * dt * 60f)
                         float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
-                        zeroCorrectionOffset += currentError * (proximityWeight * 0.08f * (dt * 60f));
+                        zeroCorrectionOffset += currentError * (proximityWeight * motionFactor * 0.02f * (dt * 60f));
                     }
                 }
 
