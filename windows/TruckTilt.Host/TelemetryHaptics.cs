@@ -268,6 +268,9 @@ internal sealed class TelemetryHaptics : IDisposable
     // Enable by setting TRUCKTILT_STEERING_DIAGNOSTICS=1 before launching the host.
     private void LogSteeringDiagnosticIfDue()
     {
+    Console.WriteLine(
+    $"STEER-DIAG: method reached; enabled={SteeringDiagnosticsEnabled}");
+    
         if (!SteeringDiagnosticsEnabled) return;
 
         var now = DateTime.UtcNow;
