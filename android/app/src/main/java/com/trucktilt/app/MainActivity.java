@@ -86,6 +86,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     static final float ROTATION_START_DEG_PER_SEC = 12f;
     static final long REFERENCE_SETTLE_MS = 220L;
     static final float REFERENCE_RETURN_THRESHOLD_DEG = 7f;
+    static final float REFERENCE_DEPARTURE_THRESHOLD_DEG = 18f;
     static final float MAX_REFERENCE_CORRECTION_DEG = 540f;
     static final float REFERENCE_CORRECTION_STEP = 0.10f;
     static final float REFERENCE_REBASE_EPSILON_DEG = 0.08f;
@@ -275,8 +276,23 @@ public class MainActivity extends Activity implements SensorEventListener {
                 }
 
                 if (view != null && view.mode == 0 && referenceCalibrationReady) {
-                    // A large rotation marks a possible return-to-calibration
-                    // event. Small 3-5 degree highway corrections are ignored.
+                    // Detect departure from the saved physical orientation using
+                    // the reference sensor itself, not only gyro Z rate. A fast
+                    // 180-degree turn can occur around a different axis or miss
+                    // the gyro-rate threshold; in that case V8 could fail to arm
+                    // the return correction and leave a large offset behind.
+                    // Small 3-5 degree steering adjustments do not arm correction.
+                    if (currentQuaternion != null && calibrationQuaternion != null) {
+                        float departureError = quaternionAngleBetween(
+                                currentQuaternion, calibrationQuaternion);
+                        if (departureError >= REFERENCE_DEPARTURE_THRESHOLD_DEG) {
+                            referenceReturnCandidate = true;
+                            lastMeaningfulRotationNs = e.timestamp;
+                            referenceNearSinceNs = 0;
+                        }
+                    }
+                    // Retain gyro-rate detection as a backup for quick rotations
+                    // where the reference sensor is updating at a lower rate.
                     if (absRate >= ROTATION_START_DEG_PER_SEC) {
                         referenceReturnCandidate = true;
                         lastMeaningfulRotationNs = e.timestamp;
