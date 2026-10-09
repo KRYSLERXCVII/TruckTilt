@@ -33,35 +33,14 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     ControllerView view;
     SensorManager sensors;
-    Sensor gyro, rotation, gameRotation;
-    float gyroAngle = 0f, gyroBias = 0f, tiltAngle = 0f;
-    long lastGyroNs = 0L;
-    float gyroRawAngle = 0f;
+    Sensor gyro, rotation;
+    float gyroAngle = 0f, tiltAngle = 0f;
 
-    float latestGyroZ = 0f;
-    long lowRateSinceNs = 0;
-    long lastReferenceSampleNs = 0L;
-    float lastReferenceMotionDeg = 0f;
-
+    // Fixed absolute calibration reference for GYRO WHEEL.
+    // Driven directly by 9-DOF TYPE_ROTATION_VECTOR to guarantee 0-drift center lock.
     float[] calibrationQuaternion = null;
     float[] currentQuaternion = null;
-    float referenceTwistDeg = 0f;
-    boolean hybridReferenceReady = false;
     boolean referenceCalibrationReady = false;
-
-    boolean calibrationBiasCapture = false;
-    long calibrationBiasStartNs = 0L;
-    double calibrationBiasSum = 0.0;
-    int calibrationBiasSamples = 0;
-    static final long CALIBRATION_BIAS_CAPTURE_MS = 650L;
-    static final float STATIONARY_RATE_LIMIT_DEG_PER_SEC = 1.20f;
-    static final float STATIONARY_REFERENCE_LIMIT_DEG_PER_SEC = 0.70f;
-    static final long STATIONARY_HOLD_MS = 350L;
-    static final float BIAS_STILL_TIME_MS = 700L;
-    static final float BIAS_TAU_SECONDS = 2.5f;
-
-    boolean stationaryHold = false;
-    long stationarySinceNs = 0L;
 
     UdpClient net;
     volatile int batteryPercent = -1;
@@ -103,9 +82,12 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         sensors = (SensorManager)getSystemService(SENSOR_SERVICE);
         gyro = sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
-        gameRotation = sensors.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
-        rotation = gameRotation != null ? gameRotation :
-                sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+        // Force absolute 9-DOF TYPE_ROTATION_VECTOR (uses accelerometer, gyro, and magnetometer)
+        // to prevent Z-axis reference frame drift over long gaming sessions.
+        rotation = sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+        if (rotation == null) {
+            rotation = sensors.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
+        }
 
         view = new ControllerView(this);
         net = new UdpClient();
@@ -151,99 +133,9 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     @Override public void onSensorChanged(SensorEvent e) {
-        if (e.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
-            if (lastGyroNs == 0) lastGyroNs = e.timestamp;
-            float dt = (e.timestamp - lastGyroNs) / 1_000_000_000f;
-            lastGyroNs = e.timestamp;
+        if (e.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR ||
+            e.sensor.getType() == Sensor.TYPE_GAME_ROTATION_VECTOR) {
 
-            if (dt > 0 && dt < .2f) {
-                latestGyroZ = e.values[2];
-                float gyroRateDeg = (float)Math.toDegrees(e.values[2] - gyroBias);
-
-                float rawRateMagnitudeDeg = (float)Math.toDegrees(
-                        Math.sqrt(e.values[0] * e.values[0] +
-                                  e.values[1] * e.values[1] +
-                                  e.values[2] * e.values[2]));
-
-                boolean referenceStill = true;
-                if (currentQuaternion != null && lastReferenceSampleNs != 0L &&
-                        e.timestamp > lastReferenceSampleNs) {
-                    float referenceRate = lastReferenceMotionDeg * 1_000_000_000f /
-                            (e.timestamp - lastReferenceSampleNs);
-                    referenceStill = referenceRate <= STATIONARY_REFERENCE_LIMIT_DEG_PER_SEC;
-                }
-
-                // CRITICAL FIX: Only consider phone still for bias learning if near physical 0 degrees.
-                // Holding a turn at steady angle must NEVER be mistaken for stationary calibration!
-                boolean nearCenter = Math.abs(referenceTwistDeg) < 2.0f;
-                boolean phoneStill = rawRateMagnitudeDeg <= STATIONARY_RATE_LIMIT_DEG_PER_SEC 
-                                  && referenceStill && nearCenter;
-
-                if (calibrationBiasCapture) {
-                    if (calibrationBiasStartNs == 0L) calibrationBiasStartNs = e.timestamp;
-
-                    if (phoneStill) {
-                        calibrationBiasSum += e.values[2];
-                        calibrationBiasSamples++;
-                    }
-
-                    if ((e.timestamp - calibrationBiasStartNs) >= CALIBRATION_BIAS_CAPTURE_MS * 1_000_000L) {
-                        if (calibrationBiasSamples > 0) {
-                            gyroBias = (float)(calibrationBiasSum / calibrationBiasSamples);
-                        }
-                        calibrationBiasCapture = false;
-                        lowRateSinceNs = e.timestamp;
-                        stationarySinceNs = e.timestamp;
-                        stationaryHold = phoneStill;
-                    }
-
-                    gyroRawAngle = 0f;
-                    gyroAngle = 0f;
-                    if (view != null) view.invalidate();
-                    return;
-                }
-
-                if (phoneStill) {
-                    if (lowRateSinceNs == 0) lowRateSinceNs = e.timestamp;
-                    if ((e.timestamp - lowRateSinceNs) >= BIAS_STILL_TIME_MS * 1_000_000L) {
-                        float alpha = 1f - (float)Math.exp(-dt / BIAS_TAU_SECONDS);
-                        gyroBias += (e.values[2] - gyroBias) * alpha;
-                    }
-
-                    if (stationarySinceNs == 0) stationarySinceNs = e.timestamp;
-                    if ((e.timestamp - stationarySinceNs) >= STATIONARY_HOLD_MS * 1_000_000L) {
-                        stationaryHold = true;
-                    }
-                } else {
-                    lowRateSinceNs = 0;
-                    stationarySinceNs = 0;
-                    stationaryHold = false;
-                }
-
-                // Primary integration step
-                if (!stationaryHold) {
-                    gyroRawAngle -= gyroRateDeg * dt;
-                }
-
-                // CONTINUOUS ANCHORING FIX:
-                // Smoothly pull raw gyro toward absolute reference orientation without threshold gates.
-                // Works even if drift reaches 18+ degrees.
-                if (view != null && view.mode == 0 && referenceCalibrationReady &&
-                        currentQuaternion != null && calibrationQuaternion != null && hybridReferenceReady) {
-                    
-                    float error = wrapDegrees(referenceTwistDeg - gyroRawAngle);
-                    
-                    // Apply continuous micro-correction to eliminate drift accumulation over time
-                    gyroRawAngle += error * (0.08f * dt * 60f);
-                }
-
-                gyroAngle = gyroRawAngle;
-
-                float half = view == null ? 450f : view.rangeDeg / 2f;
-                gyroAngle = clamp(gyroAngle, -half, half);
-            }
-        } else if (e.sensor.getType() == Sensor.TYPE_GAME_ROTATION_VECTOR ||
-                   e.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR) {
             float[] r = new float[9];
             SensorManager.getRotationMatrixFromVector(r, e.values);
             float[] o = new float[3];
@@ -252,31 +144,25 @@ public class MainActivity extends Activity implements SensorEventListener {
 
             float[] q = new float[4];
             SensorManager.getQuaternionFromVector(q, e.values);
-            if (currentQuaternion != null && lastReferenceSampleNs != 0L &&
-                    e.timestamp > lastReferenceSampleNs) {
-                long refDtNs = e.timestamp - lastReferenceSampleNs;
-                lastReferenceMotionDeg = quaternionAngleBetween(currentQuaternion, q);
-            } else {
-                lastReferenceMotionDeg = 0f;
-            }
-            lastReferenceSampleNs = e.timestamp;
             currentQuaternion = q;
 
             if (view != null && view.mode == 0 && calibrationQuaternion != null && referenceCalibrationReady) {
+                // Extract exact relative 2D twist around the physical steering axis
                 float[] rel = relativeQuaternion(calibrationQuaternion, q);
                 float w = rel[0], z = rel[3];
                 if (w < 0f) { w = -w; z = -z; }
-                referenceTwistDeg = (float)Math.toDegrees(-2.0 * Math.atan2(z, w));
-                hybridReferenceReady = true;
+                
+                // Directly calculate exact steering angle without dead reckoning/drift.
+                // When physical pose returns to calibration orientation, gyroAngle MUST equal 0.0°.
+                float calculatedSteerDeg = (float)Math.toDegrees(-2.0 * Math.atan2(z, w));
+
+                float half = view.rangeDeg / 2f;
+                gyroAngle = clamp(calculatedSteerDeg, -half, half);
             }
 
             tiltAngle = clamp(rawReference, -45f, 45f);
         }
         if (view != null) view.invalidate();
-    }
-
-    static float wrapDegrees(float value) {
-        return value - 360f * (float)Math.floor((value + 180f) / 360f);
     }
 
     static float[] relativeQuaternion(float[] a, float[] b) {
@@ -288,18 +174,6 @@ public class MainActivity extends Activity implements SensorEventListener {
             aw*by + ax*bz - ay*bw - az*bx,
             aw*bz - ax*by + ay*bx - az*bw
         };
-    }
-
-    static float quaternionAngleBetween(float[] a, float[] b) {
-        if (a == null || b == null || a.length < 4 || b.length < 4) return 180f;
-        float dot = a[0]*b[0] + a[1]*b[1] + a[2]*b[2] + a[3]*b[3];
-        if (dot < 0f) dot = -dot;
-        dot = clamp(dot, -1f, 1f);
-        float vx = a[0]*b[1] - a[1]*b[0] - a[2]*b[3] + a[3]*b[2];
-        float vy = a[0]*b[2] + a[1]*b[0] - a[2]*b[1] - a[3]*b[3];
-        float vz = a[0]*b[3] - a[1]*b[2] + a[2]*b[1] - a[3]*b[0];
-        float sinHalf = (float)Math.sqrt(vx*vx + vy*vy + vz*vz);
-        return (float)Math.toDegrees(2.0 * Math.atan2(sinHalf, dot));
     }
 
     @Override public void onAccuracyChanged(Sensor s, int a) {}
@@ -410,30 +284,13 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     void calibrate() {
         gyroAngle = 0f;
-        gyroRawAngle = 0f;
-        gyroBias = 0f;
-        calibrationBiasCapture = true;
-        calibrationBiasStartNs = 0L;
-        calibrationBiasSum = 0.0;
-        calibrationBiasSamples = 0;
-        lowRateSinceNs = 0;
-        stationarySinceNs = 0L;
-        stationaryHold = true;
-        lastGyroNs = 0;
-        lastReferenceSampleNs = 0L;
-        lastReferenceMotionDeg = 0f;
-        referenceTwistDeg = 0f;
-        hybridReferenceReady = false;
 
         if (currentQuaternion != null) {
             calibrationQuaternion = currentQuaternion.clone();
             referenceCalibrationReady = true;
-            referenceTwistDeg = 0f;
-            hybridReferenceReady = true;
         } else {
             calibrationQuaternion = null;
             referenceCalibrationReady = false;
-            hybridReferenceReady = false;
         }
 
         view.wheelAngleDeg = 0f;
