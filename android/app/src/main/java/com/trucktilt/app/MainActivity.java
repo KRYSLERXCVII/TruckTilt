@@ -37,12 +37,44 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     ControllerView view;
     SensorManager sensors;
-    Sensor gyro, rotation;
+    Sensor gyro, rotation, gameRotation;
     float gyroAngle = 0f, gyroBias = 0f, tiltAngle = 0f;
-    long lastGyroNs = 0;
+    long lastGyroNs = 0L;
+    float gyroRawAngle = 0f;
 
+    // Gyro-rate bias estimation is used when stationary to reduce Z-axis sensor drift.
+    float latestGyroZ = 0f;
+    long lowRateSinceNs = 0;
+    long lastReferenceSampleNs = 0L;
+    float lastReferenceMotionDeg = 0f;
 
+    // Fixed calibration reference for GYRO WHEEL.
+    float[] calibrationQuaternion = null;
+    float[] currentQuaternion = null;
+    long lastReferenceTimestampNs = 0L;
+    float referenceTwistDeg = 0f;
+    float referenceConfidence = 1f;
+    float referenceRateDeg = 0f;
+    boolean hybridReferenceReady = false;
+    boolean referenceCalibrationReady = false;
 
+    // Calibration bias capture state
+    boolean calibrationBiasCapture = false;
+    long calibrationBiasStartNs = 0L;
+    double calibrationBiasSum = 0.0;
+    int calibrationBiasSamples = 0;
+    static final long CALIBRATION_BIAS_CAPTURE_MS = 650L;
+    static final float STATIONARY_RATE_LIMIT_DEG_PER_SEC = 1.20f;
+    static final float STATIONARY_REFERENCE_LIMIT_DEG_PER_SEC = 0.70f;
+    static final long STATIONARY_HOLD_MS = 350L;
+    static final float BIAS_STILL_TIME_MS = 700L;
+    static final float BIAS_TAU_SECONDS = 2.5f;
+
+    boolean stationaryHold = false;
+    long stationarySinceNs = 0L;
+
+    // Complementary filter parameter: smooths absolute orientation vector reference onto gyro
+    static final float COMPLEMENTARY_ALPHA = 0.96f;
 
     UdpClient net;
     volatile int batteryPercent = -1;
@@ -84,7 +116,9 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         sensors = (SensorManager)getSystemService(SENSOR_SERVICE);
         gyro = sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
-        rotation = sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+        gameRotation = sensors.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
+        rotation = gameRotation != null ? gameRotation :
+                sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
 
         view = new ControllerView(this);
         net = new UdpClient();
@@ -136,25 +170,151 @@ public class MainActivity extends Activity implements SensorEventListener {
             lastGyroNs = e.timestamp;
 
             if (dt > 0 && dt < .2f) {
-                // Gyroscope is the sole steering sensor in GYRO WHEEL mode.
-                // Do not automatically zero or correct the accumulated angle.
-                gyroAngle -= Math.toDegrees(e.values[2] - gyroBias) * dt;
+                latestGyroZ = e.values[2];
+                float gyroRateDeg = (float)Math.toDegrees(e.values[2] - gyroBias);
 
-                // The selected steering range controls the actual virtual
-                // wheel travel: 360/540/720/900/1080 degrees.
+                float rawRateMagnitudeDeg = (float)Math.toDegrees(
+                        Math.sqrt(e.values[0] * e.values[0] +
+                                  e.values[1] * e.values[1] +
+                                  e.values[2] * e.values[2]));
+
+                boolean referenceStill = true;
+                float referenceRate = 0f;
+                if (currentQuaternion != null && lastReferenceSampleNs != 0L &&
+                        e.timestamp > lastReferenceSampleNs) {
+                    referenceRate = lastReferenceMotionDeg * 1_000_000_000f /
+                            (e.timestamp - lastReferenceSampleNs);
+                    referenceStill = referenceRate <= STATIONARY_REFERENCE_LIMIT_DEG_PER_SEC;
+                }
+
+                boolean phoneStill = rawRateMagnitudeDeg <= STATIONARY_RATE_LIMIT_DEG_PER_SEC
+                        && referenceStill;
+
+                if (calibrationBiasCapture) {
+                    if (calibrationBiasStartNs == 0L) calibrationBiasStartNs = e.timestamp;
+
+                    if (phoneStill) {
+                        calibrationBiasSum += e.values[2];
+                        calibrationBiasSamples++;
+                    }
+
+                    if ((e.timestamp - calibrationBiasStartNs) >=
+                            CALIBRATION_BIAS_CAPTURE_MS * 1_000_000L) {
+                        if (calibrationBiasSamples > 0) {
+                            gyroBias = (float)(calibrationBiasSum / calibrationBiasSamples);
+                        }
+                        calibrationBiasCapture = false;
+                        lowRateSinceNs = e.timestamp;
+                        stationarySinceNs = e.timestamp;
+                        stationaryHold = phoneStill;
+                    }
+
+                    gyroRawAngle = 0f;
+                    gyroAngle = 0f;
+                    if (view != null) view.invalidate();
+                    return;
+                }
+
+                if (phoneStill) {
+                    if (lowRateSinceNs == 0) lowRateSinceNs = e.timestamp;
+                    if ((e.timestamp - lowRateSinceNs) >= BIAS_STILL_TIME_MS * 1_000_000L) {
+                        float alpha = 1f - (float)Math.exp(-dt / BIAS_TAU_SECONDS);
+                        gyroBias += (e.values[2] - gyroBias) * alpha;
+                    }
+
+                    if (stationarySinceNs == 0) stationarySinceNs = e.timestamp;
+                    if ((e.timestamp - stationarySinceNs) >=
+                            STATIONARY_HOLD_MS * 1_000_000L) {
+                        stationaryHold = true;
+                    }
+                } else {
+                    lowRateSinceNs = 0;
+                    stationarySinceNs = 0;
+                    stationaryHold = false;
+                }
+
+                // Smooth steering update using complementary fusion to prevent angle accumulation and turn offset
+                if (!stationaryHold) {
+                    gyroRawAngle -= gyroRateDeg * dt;
+                }
+
+                if (view != null && view.mode == 0 && referenceCalibrationReady &&
+                        currentQuaternion != null && calibrationQuaternion != null &&
+                        hybridReferenceReady) {
+                    // Fuse raw gyroscope integration with relative orientation reference.
+                    // Handles full continuous turns without drift or loss of 0-degree calibration.
+                    gyroAngle = COMPLEMENTARY_ALPHA * (gyroAngle - (stationaryHold ? 0f : gyroRateDeg * dt)) 
+                              + (1f - COMPLEMENTARY_ALPHA) * referenceTwistDeg;
+                } else {
+                    gyroAngle = gyroRawAngle;
+                }
+
                 float half = view == null ? 450f : view.rangeDeg / 2f;
                 gyroAngle = clamp(gyroAngle, -half, half);
             }
-        } else if (e.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR) {
+        } else if (e.sensor.getType() == Sensor.TYPE_GAME_ROTATION_VECTOR ||
+                   e.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR) {
             float[] r = new float[9];
             SensorManager.getRotationMatrixFromVector(r, e.values);
             float[] o = new float[3];
             SensorManager.getOrientation(r, o);
+            float rawReference = (float)Math.toDegrees(o[2]);
 
-            // Rotation-vector remains available for GYRO TILT mode only.
-            tiltAngle = clamp((float)Math.toDegrees(o[2]), -45f, 45f);
+            float[] q = new float[4];
+            SensorManager.getQuaternionFromVector(q, e.values);
+            if (currentQuaternion != null && lastReferenceSampleNs != 0L &&
+                    e.timestamp > lastReferenceSampleNs) {
+                long refDtNs = e.timestamp - lastReferenceSampleNs;
+                lastReferenceMotionDeg = quaternionAngleBetween(currentQuaternion, q);
+                referenceRateDeg = lastReferenceMotionDeg * 1_000_000_000f / refDtNs;
+            } else {
+                lastReferenceMotionDeg = 0f;
+                referenceRateDeg = 0f;
+            }
+            lastReferenceSampleNs = e.timestamp;
+            currentQuaternion = q;
+
+            if (view != null && view.mode == 0 && calibrationQuaternion != null &&
+                    referenceCalibrationReady) {
+                // Compute relative twist around phone's Z steering axis relative to absolute calibrated vector.
+                float[] rel = relativeQuaternion(calibrationQuaternion, q);
+                float w = rel[0], z = rel[3];
+                if (w < 0f) { w = -w; z = -z; }
+                referenceTwistDeg = (float)Math.toDegrees(-2.0 * Math.atan2(z, w));
+
+                hybridReferenceReady = true;
+            }
+
+            tiltAngle = clamp(rawReference, -45f, 45f);
         }
         if (view != null) view.invalidate();
+    }
+
+    static float wrapDegrees(float value) {
+        return value - 360f * (float)Math.floor((value + 180f) / 360f);
+    }
+
+    static float[] relativeQuaternion(float[] a, float[] b) {
+        float aw=a[0], ax=a[1], ay=a[2], az=a[3];
+        float bw=b[0], bx=b[1], by=b[2], bz=b[3];
+        return new float[] {
+            aw*bw + ax*bx + ay*by + az*bz,
+            aw*bx - ax*bw - ay*bz + az*by,
+            aw*by + ax*bz - ay*bw - az*bx,
+            aw*bz - ax*by + ay*bx - az*bw
+        };
+    }
+
+    static float quaternionAngleBetween(float[] a, float[] b) {
+        if (a == null || b == null || a.length < 4 || b.length < 4) return 180f;
+        float dot = a[0]*b[0] + a[1]*b[1] + a[2]*b[2] + a[3]*b[3];
+        if (dot < 0f) dot = -dot;
+        dot = clamp(dot, -1f, 1f);
+        float vx = a[0]*b[1] - a[1]*b[0] - a[2]*b[3] + a[3]*b[2];
+        float vy = a[0]*b[2] + a[1]*b[0] - a[2]*b[1] - a[3]*b[3];
+        float vz = a[0]*b[3] - a[1]*b[2] + a[2]*b[1] - a[3]*b[0];
+        float sinHalf = (float)Math.sqrt(vx*vx + vy*vy + vz*vz);
+        return (float)Math.toDegrees(2.0 * Math.atan2(sinHalf, dot));
     }
 
     @Override public void onAccuracyChanged(Sensor s, int a) {}
@@ -278,11 +438,35 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     void calibrate() {
-        // Explicit calibration only: zero the current gyro wheel position.
-        // No automatic recalibration happens while driving.
         gyroAngle = 0f;
+        gyroRawAngle = 0f;
         gyroBias = 0f;
+        calibrationBiasCapture = true;
+        calibrationBiasStartNs = 0L;
+        calibrationBiasSum = 0.0;
+        calibrationBiasSamples = 0;
+        lowRateSinceNs = 0;
+        stationarySinceNs = 0L;
+        stationaryHold = true;
         lastGyroNs = 0;
+        lastReferenceSampleNs = 0L;
+        lastReferenceMotionDeg = 0f;
+        lastReferenceTimestampNs = 0L;
+        referenceTwistDeg = 0f;
+        referenceConfidence = 1f;
+        referenceRateDeg = 0f;
+        hybridReferenceReady = false;
+
+        if (currentQuaternion != null) {
+            calibrationQuaternion = currentQuaternion.clone();
+            referenceCalibrationReady = true;
+            referenceTwistDeg = 0f;
+            hybridReferenceReady = true;
+        } else {
+            calibrationQuaternion = null;
+            referenceCalibrationReady = false;
+            hybridReferenceReady = false;
+        }
 
         view.wheelAngleDeg = 0f;
         view.steer = 0f;
@@ -291,6 +475,12 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     static float clamp(float v, float a, float b) { return Math.max(a, Math.min(b, v)); }
 
+    static float normalizeDelta(float d) {
+        while (d > 180f) d -= 360f;
+        while (d < -180f) d += 360f;
+        return d;
+    }
+
     class ControllerView extends View {
         final Paint p = new Paint(3);
         final Paint stroke = new Paint(3);
@@ -298,8 +488,6 @@ public class MainActivity extends Activity implements SensorEventListener {
         final HashMap<Integer,String> pointerControls = new HashMap<>();
         final boolean[] buttons = new boolean[32];
 
-        // User-editable cockpit layout. Positions/sizes are stored normalized
-        // to the screen so a layout survives different phone resolutions.
         final android.content.SharedPreferences layoutPrefs =
                 getSharedPreferences("trucktilt_layout", MODE_PRIVATE);
         boolean customizing = false;
@@ -315,8 +503,6 @@ public class MainActivity extends Activity implements SensorEventListener {
         float wheelLastAngle = 0f;
         boolean wheelDragging = false;
 
-        // Relative camera-trackpad state. Deltas are consumed by the 60 Hz
-        // network loop and sent separately from the HID controller packet.
         final Object cameraSync = new Object();
         float cameraDx = 0f, cameraDy = 0f;
         boolean cameraDragging = false;
@@ -363,55 +549,38 @@ public class MainActivity extends Activity implements SensorEventListener {
             int w=getWidth(), h=getHeight();
             c.drawColor(Color.rgb(7,9,11));
 
-            // Responsive control sizing. The layout positions remain the same,
-            // but button dimensions grow with the actual landscape screen so
-            // controls are easier to read and hit without crowding the cockpit.
             float controlH = Math.max(44f, Math.min(58f, h * 0.050f));
             float smallControlH = Math.max(42f, Math.min(54f, h * 0.046f));
             float controlText = Math.max(10f, Math.min(15f, controlH * 0.24f));
 
-            // Header
             p.setStyle(Paint.Style.FILL); p.setColor(Color.rgb(18,22,26));
             c.drawRect(0,0,w,58,p);
-            // Clean, light branding: keep the creator/version secondary to the app name.
             text(c,"TRUCKTILT",20,37,20,Color.WHITE,Paint.Align.LEFT);
             int battery = getBatteryPercent();
             if (battery >= 0) {
                 int batteryColor = battery <= 15 ? Color.rgb(255,100,100)
                         : battery <= 30 ? Color.rgb(255,190,70)
                         : Color.WHITE;
-                // Keep the battery percentage clear of the DONATE button.
                 text(c, "BAT " + battery + "%", w - 305, 36, 13, batteryColor, Paint.Align.RIGHT);
             }
             text(c,"by KRYSLERXCVII  •  v0.14.0",136,37,15,Color.rgb(205,212,220),Paint.Align.LEFT);
 
-            // Prominent support button: red only for the donation CTA so it is
-            // immediately discoverable without overpowering the cockpit.
             donateButton(c,"DONATE",w-82,29,132,38);
 
-            // Keep connection diagnostics clearly separated from the donation CTA.
             text(c,net.connected ? "● CONNECTED" : "● SEARCHING",
                     w-168,22,11,net.connected?Color.rgb(139,195,74):Color.rgb(255,180,50),Paint.Align.RIGHT);
             String status=net.connected ? net.rttMs+" ms  •  "+net.rate+" Hz  •  TX "+net.txCount : "Wi-Fi only • auto discovery";
             text(c,status,w-168,42,10,Color.LTGRAY,Paint.Align.RIGHT);
 
-            // Truck cockpit layout:
-            // LEFT   = steering + frequently used steering-wheel controls
-            // CENTER = grouped truck functions + camera touchpad
-            // RIGHT  = progressive pedals + drivetrain controls
             float leftWidth=w*.34f;
             float centerLeft=w*.36f, centerRight=w*.72f;
             float pedalLeft=w*.75f, pedalRight=w*.99f;
 
-            // -----------------------------------------------------------------
-            // STEERING AREA
-            // -----------------------------------------------------------------
             float wheelCx=leftWidth*.50f;
             float wheelCy=h*.56f;
             float radius=Math.min(leftWidth*.39f,h*.34f);
             wheelRect.set(wheelCx-radius,wheelCy-radius,wheelCx+radius,wheelCy+radius);
 
-            // Keep the three setup controls: MODE, steering range and CALIBRATE.
             button(c,"MODE",wheelCx-88,78,105,38,false);
             button(c,rangeDeg+"°",wheelCx+20,78,88,38,false);
             button(c,"CALIBRATE",wheelCx+111,78,115,38,false);
@@ -420,17 +589,10 @@ public class MainActivity extends Activity implements SensorEventListener {
             if(customizing)
                 button(c,"RESET LAYOUT",wheelCx+215,164,135,34,false);
 
-            // Steering-wheel quick controls: indicators on either side, horns above.
-            // Indicators sit fully OUTSIDE the steering wheel so they remain visible
-            // and easy to tap; they are never covered by the wheel graphic.
-            // Steering-wheel quick controls: LEFT, HORN and RIGHT share one
-            // easy-to-reach horizontal row above the wheel. Air horn sits directly
-            // below the horn so the three primary controls stay visually grouped.
             float quickY=wheelCy-radius-34f;
             float quickW=Math.min(112f, Math.max(92f, w * 0.052f));
             float quickGap=Math.max(16f, w * 0.010f);
-            // Keep LEFT, HORN and RIGHT on one row, fully inside the screen.
-            // This avoids the indicator buttons being hidden behind/off the wheel.
+
             drawMappedButton(c,0,wheelCx-quickW-quickGap,quickY,quickW,controlH); // LEFT
             drawMappedButton(c,5,wheelCx,quickY,quickW,controlH);                 // HORN
             drawMappedButton(c,1,wheelCx+quickW+quickGap,quickY,quickW,controlH); // RIGHT
@@ -438,71 +600,53 @@ public class MainActivity extends Activity implements SensorEventListener {
 
             drawWheel(c,wheelCx,wheelCy,radius);
 
-            // -----------------------------------------------------------------
-            // CENTER: logical truck controls. Frequently used controls are
-            // grouped instead of following the raw button-number order.
-            // -----------------------------------------------------------------
             float colW=(centerRight-centerLeft)/4f;
             float buttonW=Math.min(170f, colW-8f);
             float centerButtonH = controlH;
             float top=86f;
-            // Add breathing room between button rows so adjacent controls are
-            // easier to distinguish and tap.
             float rowGap=Math.min(62f,(h*.48f-top)/7f);
 
-            // Row 1 — lighting
             int[] lighting={3,2,4,24};
             for(int col=0;col<4;col++) {
                 float x=centerLeft+colW*(col+.5f);
                 drawMappedButton(c,lighting[col],x,top+rowGap*.5f,buttonW,centerButtonH);
             }
 
-            // Row 2 — cruise cluster + engine. Cruise is the main button,
-            // with + and - immediately beside it.
             int[] cruiseRow={17,13,14,15};
             for(int col=0;col<4;col++) {
                 float x=centerLeft+colW*(col+.5f);
                 drawMappedButton(c,cruiseRow[col],x,top+rowGap*1.5f,buttonW,centerButtonH);
             }
 
-            // Row 3 — parking brake and wipers
             int[] wiperRow={16,7,8,9};
             for(int col=0;col<4;col++) {
                 float x=centerLeft+colW*(col+.5f);
                 drawMappedButton(c,wiperRow[col],x,top+rowGap*2.5f,buttonW,centerButtonH);
             }
 
-            // Row 4 — mirrors and camera
             int[] viewRow={28,29,23,20};
             for(int col=0;col<4;col++) {
                 float x=centerLeft+colW*(col+.5f);
                 drawMappedButton(c,viewRow[col],x,top+rowGap*3.5f,buttonW,centerButtonH);
             }
 
-            // Row 5 — navigation / truck utility
             int[] utilityRow={21,22,25,26};
             for(int col=0;col<4;col++) {
                 float x=centerLeft+colW*(col+.5f);
                 drawMappedButton(c,utilityRow[col],x,top+rowGap*4.5f,buttonW,centerButtonH);
             }
 
-            // Row 6 — remaining utility controls
             int[] utilityRow2={27,30,31};
             for(int col=0;col<3;col++) {
                 float x=centerLeft+colW*(col+.5f);
                 drawMappedButton(c,utilityRow2[col],x,top+rowGap*5.5f,buttonW,centerButtonH);
             }
 
-            // Camera touchpad occupies the lower center and remains independent
-            // from every truck button.
             float cameraLeft=centerLeft+8f, cameraRight=centerRight-8f;
             float cameraTop=top+rowGap*7f+14f, cameraBottom=h*.94f;
             if(cameraBottom>cameraTop+70f)
                 drawCameraPad(c,cameraLeft,cameraTop,cameraRight,cameraBottom);
 
-            // -----------------------------------------------------------------
-            // PEDALS / DRIVETRAIN
-            // -----------------------------------------------------------------
             float pw=Math.min(190,(pedalRight-pedalLeft-24)/2f);
             float px1=pedalLeft+(pedalRight-pedalLeft)*.27f;
             float px2=pedalLeft+(pedalRight-pedalLeft)*.73f;
@@ -512,10 +656,9 @@ public class MainActivity extends Activity implements SensorEventListener {
             drawProgressivePedal(c,"THROTTLE",px1,py1,pw,270,throttle);
             drawProgressivePedal(c,"BRAKE",px2,py1,pw,270,brake);
 
-            // Gear and engine controls are deliberately close to the pedals.
             drawMappedButton(c,18,px1,h*.59f,pw*.88f,controlH); // GEAR UP
-            drawMappedButton(c,10,px2,h*.59f,pw*.88f,controlH); // ENGINE BRAKE (swapped into Gear Down position)
-            drawMappedButton(c,19,px1,h*.68f,pw*.88f,controlH); // GEAR DOWN (swapped into Engine Brake position)
+            drawMappedButton(c,10,px2,h*.59f,pw*.88f,controlH); // ENGINE BRAKE
+            drawMappedButton(c,19,px1,h*.68f,pw*.88f,controlH); // GEAR DOWN
             drawMappedButton(c,11,px2,h*.68f,pw*.88f,controlH); // RETARDER+
             drawMappedButton(c,12,px2,h*.77f,pw*.88f,controlH); // RETARDER-
 
@@ -576,8 +719,6 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
 
         void drawControlLabel(Canvas c, String label, RectF r, float baseSize, int color) {
-            // Text belongs to the control rectangle: its position and size are
-            // derived from the customized rectangle, never the original layout.
             float size = Math.max(9f, Math.min(baseSize * 1.45f,
                     Math.min(r.height() * 0.30f, r.width() / Math.max(6f, label.length() * 0.58f))));
             text(c,label,r.centerX(),r.centerY()+size*0.34f,size,color,Paint.Align.CENTER);
@@ -626,14 +767,12 @@ public class MainActivity extends Activity implements SensorEventListener {
                 p.setColor(Color.rgb(139,195,74));
                 float fillTop=r.bottom-(r.height()*v);
                 c.drawRoundRect(new RectF(r.left,r.top,r.right,r.bottom),12,12,p);
-                // Cut the fill back to the actual progress area using the background color.
                 p.setColor(Color.rgb(24,29,34));
                 c.drawRoundRect(new RectF(r.left,r.top,r.right,fillTop),12,12,p);
                 p.setColor(Color.rgb(139,195,74));
                 c.drawRect(r.left,fillTop,r.right,r.bottom,p);
             }
 
-            // Progress marker.
             float markerY=r.bottom-(r.height()*v);
             p.setColor(Color.WHITE);
             c.drawRoundRect(new RectF(r.left+10,markerY-3,r.right-10,markerY+3),3,3,p);
@@ -740,8 +879,6 @@ public class MainActivity extends Activity implements SensorEventListener {
                     if(hit("B"+i,x,y)) {
                         buttons[i]=true;
                         pointerControls.put(pointerId,"B"+i);
-                        // Short, device-appropriate click feedback for every cockpit button.
-                        // It is controlled by the single HAPTICS ON/OFF setting.
                         if(hapticsEnabled) {
                             performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY);
                         }
@@ -763,7 +900,6 @@ public class MainActivity extends Activity implements SensorEventListener {
                         float dy=my-editStartY;
 
                         if(editResizing){
-                            // Continuous bottom-right resize. No grid or step snapping.
                             float minW=40f, minH=32f;
                             float right=clamp(editStartRect.right+dx,
                                     editStartRect.left+minW,getWidth()-8f);
@@ -771,7 +907,6 @@ public class MainActivity extends Activity implements SensorEventListener {
                                     editStartRect.top+minH,getHeight()-8f);
                             r.set(editStartRect.left,editStartRect.top,right,bottom);
                         } else {
-                            // 1:1 movement: finger delta equals control delta.
                             float nx=editStartRect.left+dx;
                             float ny=editStartRect.top+dy;
                             float maxX=getWidth()-editStartRect.width()-8f;
@@ -795,9 +930,6 @@ public class MainActivity extends Activity implements SensorEventListener {
                 return true;
             }
 
-            // Multi-touch: update each active control independently. Steering,
-            // throttle/brake, and camera each keep their own pointer ID, so one
-            // finger can pan the camera while another operates a pedal or wheel.
             if(action==MotionEvent.ACTION_MOVE && activePedalPointer>=0) {
                 int idx=e.findPointerIndex(activePedalPointer);
                 if(idx>=0 && ("THROTTLE".equals(activePedal) || "BRAKE".equals(activePedal))) {
@@ -813,8 +945,6 @@ public class MainActivity extends Activity implements SensorEventListener {
                     float delta=normalizeDelta(a-wheelLastAngle);
                     wheelLastAngle=a;
 
-                    // Hard steering stops. Continuous angle accumulation prevents
-                    // atan2() wraparound from suddenly reversing steering.
                     float maxAngle=rangeDeg/2f;
                     wheelAngleDeg=clamp(
                             wheelAngleDeg + delta*(rangeDeg/360f),
@@ -826,9 +956,6 @@ public class MainActivity extends Activity implements SensorEventListener {
                 }
             }
 
-            // Do NOT return here: camera movement must be allowed to run in
-            // the same ACTION_MOVE event as steering or a pedal. Each active
-            // control uses its own pointer ID, so all three can move together.
             if(action==MotionEvent.ACTION_MOVE && cameraDragging && cameraPointerId>=0) {
                 int idx=e.findPointerIndex(cameraPointerId);
                 if(idx>=0) {
@@ -854,7 +981,6 @@ public class MainActivity extends Activity implements SensorEventListener {
                 if(pointerId==wheelPointerId){
                     wheelPointerId=-1;
                     wheelDragging=false;
-                    // Virtual wheel is spring-loaded: release smoothly returns steering to center.
                     startWheelReturn();
                 }
                 if(pointerId==cameraPointerId){
@@ -880,7 +1006,6 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
 
         String findEditableKey(float x,float y) {
-            // Buttons first: they are the primary customizable controls.
             for(int i=0;i<32;i++) {
                 RectF r=controls.get("B"+i);
                 if(r!=null && r.contains(x,y)) return "B"+i;
@@ -895,14 +1020,10 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
 
         boolean isResizeHandle(RectF r,float x,float y) {
-            // Larger handle makes resizing easier; resizing itself remains 1:1.
             return r!=null && x>=r.right-44f && y>=r.bottom-44f;
         }
 
         RectF customRect(String key,RectF def) {
-            // While editing, keep the live in-memory rectangle. The old version
-            // reloaded the last saved Preferences value on every redraw, so the
-            // control jumped back between touch events and felt like snapping.
             if(customizing && key.equals(editKey)) {
                 RectF live=controls.get(key);
                 if(live!=null) return new RectF(live);
@@ -937,7 +1058,6 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
 
         void drawCustomizeOverlay(Canvas c) {
-            // Editor hint bar.
             p.setStyle(Paint.Style.FILL);
             p.setColor(Color.argb(225,18,23,28));
             c.drawRoundRect(new RectF(getWidth()/2f-250,getHeight()-58,
@@ -977,7 +1097,6 @@ public class MainActivity extends Activity implements SensorEventListener {
                 @Override public void run(){
                     if(!wheelReturning || wheelDragging) return;
 
-                    // Exponential spring-back: fast initially, gentle near center.
                     wheelAngleDeg *= 0.78f;
 
                     if(Math.abs(wheelAngleDeg) < 0.5f){
@@ -1003,7 +1122,6 @@ public class MainActivity extends Activity implements SensorEventListener {
         float pedalValueAt(String s,float y){
             RectF r=controls.get("P_"+s);
             if(r==null) return 0f;
-            // Top = 100%, bottom = 0%.
             return clamp((r.bottom-y)/r.height(),0f,1f);
         }
 
@@ -1023,14 +1141,6 @@ public class MainActivity extends Activity implements SensorEventListener {
             }
         }
 
-        // Pedal response curves.
-        // The touch position remains linear, but truck pedals feel more natural
-        // when the lower part of the travel is softer and full input is reserved
-        // for the end of the physical pedal travel.
-        //
-        // Brake: noticeably softer in the first part of travel so ~30% touch
-        // does not behave like a heavy brake application.
-        // Throttle: slightly progressive so 100% is only reached at the very top.
         static float brakeResponse(float v) {
             v = clamp(v, 0f, 1f);
             return (float)Math.pow(v, 1.70);
@@ -1096,8 +1206,6 @@ public class MainActivity extends Activity implements SensorEventListener {
                         sendRaw("CONNECT|"+android.os.Build.MODEL,host,hostPort);
                     } else if(s.startsWith("WELCOME|")) connected=true;
                     else if(s.startsWith("HAPTIC|")){
-                        // Haptics are sent asynchronously by the Windows host.
-                        // Keep them on the same UDP connection as controller data.
                         String payload = s.substring(7).trim();
                         if(!payload.isEmpty()) handleHapticMessage(payload);
                     } else if(s.startsWith("PONG|")){
@@ -1130,8 +1238,6 @@ public class MainActivity extends Activity implements SensorEventListener {
 
                 float[] cam=v.consumeCameraDelta();
                 if(Math.abs(cam[0]) > 0.01f || Math.abs(cam[1]) > 0.01f){
-                    // Android Y grows downward; Windows mouse Y has the same
-                    // screen convention, so no inversion is needed here.
                     String cm=String.format(Locale.US,"CAMERA|%.2f|%.2f",cam[0],cam[1]);
                     sendRaw(cm,host,hostPort);
                 }
