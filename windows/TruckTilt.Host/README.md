@@ -1,4 +1,4 @@
-# TruckTilt v0.14.0 — Auto-Binding Normal Pedal Mode
+# TruckTilt v0.12.6 — Auto-Binding Normal Pedal Mode
 
 This Windows host package automatically configures the active ETS2/ATS profile to match the known-good TruckTilt manual controller setup.
 

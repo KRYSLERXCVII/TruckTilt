@@ -59,7 +59,6 @@ public class MainActivity extends Activity implements SensorEventListener {
     volatile boolean hapticsEnabled;
     Vibrator vibrator;
     boolean offRoadRumbleActive = false;
-    int adaptiveRumbleIntensity = -1;
 
     final ScheduledExecutorService networkExecutor =
             Executors.newScheduledThreadPool(2);
@@ -173,43 +172,25 @@ public class MainActivity extends Activity implements SensorEventListener {
         runOnUiThread(() -> {
             if (!hapticsEnabled || vibrator == null || !vibrator.hasVibrator()) return;
             try {
-                if (type.startsWith("RUMBLE|")) {
-                    int intensity = 0;
-                    try { intensity = Integer.parseInt(type.substring(7).trim()); }
-                    catch (Exception ignored) { }
-                    startAdaptiveRumble(Math.max(1, Math.min(100, intensity)));
-                    return;
-                }
-
                 switch (type) {
                     case "SHIFT":
-                    case "SHIFT_HINT":
-                        vibrateWaveform(
-                                new long[]{0, 22, 35, 34},
-                                new int[]{0, 95, 0, 75}, -1);
-                        break;
-                    case "SHIFT_UP":
-                        vibrateWaveform(
-                                new long[]{0, 28, 32, 42},
-                                new int[]{0, 105, 0, 80}, -1);
-                        break;
-                    case "SHIFT_DOWN":
-                        vibrateWaveform(
-                                new long[]{0, 42, 32, 28},
-                                new int[]{0, 90, 0, 70}, -1);
+                        vibrateOneShot(32, 85);
                         break;
                     case "ENGINE_START":
                         vibrateWaveform(
-                                new long[]{0, 45, 25, 65, 35, 105, 55},
-                                new int[]{0, 40, 60, 105, 75, 55, 0}, -1);
+                                new long[]{0, 55, 35, 95, 55},
+                                new int[]{0, 55, 95, 55, 0}, -1);
                         break;
                     case "ENGINE_STOP":
                         vibrateWaveform(
-                                new long[]{0, 85, 40, 65, 60, 35},
-                                new int[]{0, 90, 70, 48, 25, 0}, -1);
+                                new long[]{0, 80, 45, 55, 65},
+                                new int[]{0, 70, 45, 25, 0}, -1);
+                        break;
+                    case "RUMBLE_START":
+                        startOffRoadRumble();
                         break;
                     case "RUMBLE_STOP":
-                        stopAdaptiveRumble();
+                        stopOffRoadRumble();
                         break;
                     default:
                         break;
@@ -239,31 +220,22 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
     }
 
-    void startAdaptiveRumble(int intensity) {
-        if (vibrator == null || !vibrator.hasVibrator()) return;
-        if (adaptiveRumbleIntensity == intensity && offRoadRumbleActive) return;
-        adaptiveRumbleIntensity = intensity;
+    void startOffRoadRumble() {
+        if (offRoadRumbleActive || vibrator == null || !vibrator.hasVibrator()) return;
         offRoadRumbleActive = true;
-
-        int a1 = Math.max(8, Math.min(180, 35 + intensity * 2));
-        int a2 = Math.max(6, Math.min(150, 20 + intensity));
-        int a3 = Math.max(8, Math.min(165, 28 + (int)(intensity * 1.45f)));
+        // Soft repeating cabin/road rumble. The repeat begins after the short
+        // fade-in so it does not feel like repeated notification pulses.
         vibrateWaveform(
-                new long[]{0, 150, 75, 115, 65},
-                new int[]{0, a1, a2, a3, 0}, 0);
+                new long[]{0, 250, 250, 200},
+                new int[]{0, 42, 30, 36}, 1);
     }
 
-    void stopAdaptiveRumble() {
-        adaptiveRumbleIntensity = -1;
+    void stopOffRoadRumble() {
         offRoadRumbleActive = false;
         if (vibrator != null) {
             try { vibrator.cancel(); } catch (Throwable ignored) {}
         }
     }
-
-    void startOffRoadRumble() { startAdaptiveRumble(55); }
-
-    void stopOffRoadRumble() { stopAdaptiveRumble(); }
 
     int getBatteryPercent() {
         return batteryPercent;
@@ -383,7 +355,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                 // Keep the battery percentage clear of the DONATE button.
                 text(c, "BAT " + battery + "%", w - 305, 36, 13, batteryColor, Paint.Align.RIGHT);
             }
-            text(c,"by KRYSLERXCVII  •  v0.14.0",136,37,15,Color.rgb(205,212,220),Paint.Align.LEFT);
+            text(c,"by KRYSLERXCVII  •  v0.12.6",136,37,15,Color.rgb(205,212,220),Paint.Align.LEFT);
 
             // Prominent support button: red only for the donation CTA so it is
             // immediately discoverable without overpowering the cockpit.
@@ -1023,29 +995,10 @@ public class MainActivity extends Activity implements SensorEventListener {
             }
         }
 
-        // Pedal response curves.
-        // The touch position remains linear, but truck pedals feel more natural
-        // when the lower part of the travel is softer and full input is reserved
-        // for the end of the physical pedal travel.
-        //
-        // Brake: noticeably softer in the first part of travel so ~30% touch
-        // does not behave like a heavy brake application.
-        // Throttle: slightly progressive so 100% is only reached at the very top.
-        static float brakeResponse(float v) {
-            v = clamp(v, 0f, 1f);
-            return (float)Math.pow(v, 1.70);
-        }
-
-        static float throttleResponse(float v) {
-            v = clamp(v, 0f, 1f);
-            return (float)Math.pow(v, 1.35);
-        }
-
         void setPedal(String s,float v){
-            v = clamp(v,0f,1f);
             if("CLUTCH".equals(s)) clutch=v;
-            else if("BRAKE".equals(s)) brake=brakeResponse(v);
-            else if("THROTTLE".equals(s)) throttle=throttleResponse(v);
+            else if("BRAKE".equals(s)) brake=v;
+            else if("THROTTLE".equals(s)) throttle=v;
             else if("RETARDER".equals(s)) retarder=v;
         }
         void cycleRange(){

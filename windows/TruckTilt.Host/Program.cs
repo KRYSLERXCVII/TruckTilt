@@ -7,7 +7,7 @@ const int Port = 45454;
 const int TimeoutMs = 500;
 
 Console.Title = "TruckTilt Host";
-Console.WriteLine("TruckTilt Host v0.14.0 - ETS2 DirectInput Wheel");
+Console.WriteLine("TruckTilt Host v0.12.6 - ETS2 DirectInput Wheel");
 Console.WriteLine("================================================");
 Console.WriteLine($"Listening for TruckTilt phones on UDP {Port}");
 Console.WriteLine("Device: TruckTilt Virtual Steering Wheel (DirectInput/HID)");
@@ -82,12 +82,12 @@ _ = Task.Run(async () =>
 
             if (message.StartsWith("DISCOVER|TruckTilt|", StringComparison.OrdinalIgnoreCase))
             {
-                response = Encoding.UTF8.GetBytes($"HELLO|TruckTilt|0.14.0|{Environment.MachineName}");
+                response = Encoding.UTF8.GetBytes($"HELLO|TruckTilt|0.12.6|{Environment.MachineName}");
             }
             else if (message.StartsWith("CONNECT|", StringComparison.OrdinalIgnoreCase))
             {
                 lock (sync) phoneEndpoint = result.RemoteEndPoint;
-                response = Encoding.UTF8.GetBytes($"WELCOME|{Environment.MachineName}|0.14.0");
+                response = Encoding.UTF8.GetBytes($"WELCOME|{Environment.MachineName}|0.12.6");
             }
             else if (message.StartsWith("PING|", StringComparison.OrdinalIgnoreCase))
             {
