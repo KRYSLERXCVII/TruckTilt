@@ -86,7 +86,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     static final float ROTATION_START_DEG_PER_SEC = 12f;
     static final long REFERENCE_SETTLE_MS = 220L;
     static final float REFERENCE_RETURN_THRESHOLD_DEG = 7f;
-    static final float MAX_REFERENCE_CORRECTION_DEG = 20f;
+    static final float MAX_REFERENCE_CORRECTION_DEG = 540f;
     static final float REFERENCE_CORRECTION_STEP = 0.10f;
     static final float REFERENCE_REBASE_EPSILON_DEG = 0.08f;
     static final long REFERENCE_REBASE_HOLD_MS = 350L;
@@ -304,9 +304,11 @@ public class MainActivity extends Activity implements SensorEventListener {
                                 // At the calibrated physical orientation, the
                                 // correct gyro-wheel angle is 0°. Any remaining
                                 // gyro angle is accumulated integration error.
-                                float error = clamp(-gyroRawAngle,
-                                        -MAX_REFERENCE_CORRECTION_DEG,
-                                        MAX_REFERENCE_CORRECTION_DEG);
+                                // The previous 20-degree cap left large accumulated
+                                // errors partially uncorrected (e.g. +41 degrees could
+                                // never return to zero). Allow the full supported wheel
+                                // range to be corrected when the fixed reference confirms
+                                // the phone has returned to calibration orientation.
                                 targetCorrectionOffset = clamp(
                                         -gyroRawAngle,
                                         -MAX_REFERENCE_CORRECTION_DEG,
