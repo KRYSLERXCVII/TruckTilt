@@ -38,20 +38,17 @@ public class MainActivity extends Activity implements SensorEventListener {
     long lastGyroNs = 0L;
     float gyroRawAngle = 0f;
 
-    // Gyro-rate bias estimation when resting still.
     float latestGyroZ = 0f;
     long lowRateSinceNs = 0;
     long lastReferenceSampleNs = 0L;
     float lastReferenceMotionDeg = 0f;
 
-    // Fixed calibration reference for GYRO WHEEL.
     float[] calibrationQuaternion = null;
     float[] currentQuaternion = null;
     float referenceTwistDeg = 0f;
     boolean hybridReferenceReady = false;
     boolean referenceCalibrationReady = false;
 
-    // Calibration bias capture state
     boolean calibrationBiasCapture = false;
     long calibrationBiasStartNs = 0L;
     double calibrationBiasSum = 0.0;
@@ -176,7 +173,11 @@ public class MainActivity extends Activity implements SensorEventListener {
                     referenceStill = referenceRate <= STATIONARY_REFERENCE_LIMIT_DEG_PER_SEC;
                 }
 
-                boolean phoneStill = rawRateMagnitudeDeg <= STATIONARY_RATE_LIMIT_DEG_PER_SEC && referenceStill;
+                // CRITICAL FIX: Only consider phone still for bias learning if near physical 0 degrees.
+                // Holding a turn at steady angle must NEVER be mistaken for stationary calibration!
+                boolean nearCenter = Math.abs(referenceTwistDeg) < 2.0f;
+                boolean phoneStill = rawRateMagnitudeDeg <= STATIONARY_RATE_LIMIT_DEG_PER_SEC 
+                                  && referenceStill && nearCenter;
 
                 if (calibrationBiasCapture) {
                     if (calibrationBiasStartNs == 0L) calibrationBiasStartNs = e.timestamp;
@@ -186,8 +187,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                         calibrationBiasSamples++;
                     }
 
-                    if ((e.timestamp - calibrationBiasStartNs) >=
-                            CALIBRATION_BIAS_CAPTURE_MS * 1_000_000L) {
+                    if ((e.timestamp - calibrationBiasStartNs) >= CALIBRATION_BIAS_CAPTURE_MS * 1_000_000L) {
                         if (calibrationBiasSamples > 0) {
                             gyroBias = (float)(calibrationBiasSum / calibrationBiasSamples);
                         }
@@ -220,26 +220,21 @@ public class MainActivity extends Activity implements SensorEventListener {
                     stationaryHold = false;
                 }
 
-                // Integrate high-speed gyro angular motion
+                // Primary integration step
                 if (!stationaryHold) {
                     gyroRawAngle -= gyroRateDeg * dt;
                 }
 
-                // RE-ANCHORING LOGIC:
-                // When actively turning/holding, no correction is applied (pure gyro feel).
-                // As you rotate back towards center (< 15 degrees) or hold still, gently align 
-                // gyroRawAngle with absolute referenceTwistDeg to eliminate sharp-turn drift.
+                // CONTINUOUS ANCHORING FIX:
+                // Smoothly pull raw gyro toward absolute reference orientation without threshold gates.
+                // Works even if drift reaches 18+ degrees.
                 if (view != null && view.mode == 0 && referenceCalibrationReady &&
                         currentQuaternion != null && calibrationQuaternion != null && hybridReferenceReady) {
                     
-                    float absRef = Math.abs(referenceTwistDeg);
-                    if (absRef < 15.0f || stationaryHold) {
-                        float error = wrapDegrees(referenceTwistDeg - gyroRawAngle);
-                        
-                        // Higher pull rate near center (0-5 deg) to guarantee exact 0-degree lock upon return
-                        float pullFactor = absRef < 5.0f ? 0.15f : 0.05f;
-                        gyroRawAngle += error * pullFactor;
-                    }
+                    float error = wrapDegrees(referenceTwistDeg - gyroRawAngle);
+                    
+                    // Apply continuous micro-correction to eliminate drift accumulation over time
+                    gyroRawAngle += error * (0.08f * dt * 60f);
                 }
 
                 gyroAngle = gyroRawAngle;
@@ -267,8 +262,7 @@ public class MainActivity extends Activity implements SensorEventListener {
             lastReferenceSampleNs = e.timestamp;
             currentQuaternion = q;
 
-            if (view != null && view.mode == 0 && calibrationQuaternion != null &&
-                    referenceCalibrationReady) {
+            if (view != null && view.mode == 0 && calibrationQuaternion != null && referenceCalibrationReady) {
                 float[] rel = relativeQuaternion(calibrationQuaternion, q);
                 float w = rel[0], z = rel[3];
                 if (w < 0f) { w = -w; z = -z; }
@@ -335,29 +329,19 @@ public class MainActivity extends Activity implements SensorEventListener {
                 switch (type) {
                     case "SHIFT":
                     case "SHIFT_HINT":
-                        vibrateWaveform(
-                                new long[]{0, 22, 35, 34},
-                                new int[]{0, 95, 0, 75}, -1);
+                        vibrateWaveform(new long[]{0, 22, 35, 34}, new int[]{0, 95, 0, 75}, -1);
                         break;
                     case "SHIFT_UP":
-                        vibrateWaveform(
-                                new long[]{0, 28, 32, 42},
-                                new int[]{0, 105, 0, 80}, -1);
+                        vibrateWaveform(new long[]{0, 28, 32, 42}, new int[]{0, 105, 0, 80}, -1);
                         break;
                     case "SHIFT_DOWN":
-                        vibrateWaveform(
-                                new long[]{0, 42, 32, 28},
-                                new int[]{0, 90, 0, 70}, -1);
+                        vibrateWaveform(new long[]{0, 42, 32, 28}, new int[]{0, 90, 0, 70}, -1);
                         break;
                     case "ENGINE_START":
-                        vibrateWaveform(
-                                new long[]{0, 45, 25, 65, 35, 105, 55},
-                                new int[]{0, 40, 60, 105, 75, 55, 0}, -1);
+                        vibrateWaveform(new long[]{0, 45, 25, 65, 35, 105, 55}, new int[]{0, 40, 60, 105, 75, 55, 0}, -1);
                         break;
                     case "ENGINE_STOP":
-                        vibrateWaveform(
-                                new long[]{0, 85, 40, 65, 60, 35},
-                                new int[]{0, 90, 70, 48, 25, 0}, -1);
+                        vibrateWaveform(new long[]{0, 85, 40, 65, 60, 35}, new int[]{0, 90, 70, 48, 25, 0}, -1);
                         break;
                     case "RUMBLE_STOP":
                         stopAdaptiveRumble();
@@ -398,9 +382,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         int a1 = Math.max(8, Math.min(180, 35 + intensity * 2));
         int a2 = Math.max(6, Math.min(150, 20 + intensity));
         int a3 = Math.max(8, Math.min(165, 28 + (int)(intensity * 1.45f)));
-        vibrateWaveform(
-                new long[]{0, 150, 75, 115, 65},
-                new int[]{0, a1, a2, a3, 0}, 0);
+        vibrateWaveform(new long[]{0, 150, 75, 115, 65}, new int[]{0, a1, a2, a3, 0}, 0);
     }
 
     void stopAdaptiveRumble() {
