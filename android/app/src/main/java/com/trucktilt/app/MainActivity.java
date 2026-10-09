@@ -23,8 +23,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * TruckTilt v0.9 — branded Android controller build.
- * Android side of the Wi-Fi steering-wheel controller.
+ * TruckTilt v0.9 — smooth gravity potential anchor.
  */
 public class MainActivity extends Activity implements SensorEventListener {
     static final int PORT = 45454;
@@ -33,14 +32,16 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     ControllerView view;
     SensorManager sensors;
-    Sensor gyro, rotation;
-    float gyroAngle = 0f, tiltAngle = 0f;
+    Sensor gyro, accel;
 
-    // Fixed absolute calibration reference for GYRO WHEEL.
-    // Driven directly by 9-DOF TYPE_ROTATION_VECTOR to guarantee 0-drift center lock.
-    float[] calibrationQuaternion = null;
-    float[] currentQuaternion = null;
-    boolean referenceCalibrationReady = false;
+    float gyroAngle = 0f, tiltAngle = 0f;
+    long lastGyroNs = 0L;
+
+    // Seamless Physical Baseline Anchoring
+    float[] calibrationGravity = null;
+    float[] currentGravity = null;
+    float rawGyroIntegratedDeg = 0f;
+    float zeroCorrectionOffset = 0f;
 
     UdpClient net;
     volatile int batteryPercent = -1;
@@ -82,12 +83,7 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         sensors = (SensorManager)getSystemService(SENSOR_SERVICE);
         gyro = sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
-        // Force absolute 9-DOF TYPE_ROTATION_VECTOR (uses accelerometer, gyro, and magnetometer)
-        // to prevent Z-axis reference frame drift over long gaming sessions.
-        rotation = sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
-        if (rotation == null) {
-            rotation = sensors.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
-        }
+        accel = sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
 
         view = new ControllerView(this);
         net = new UdpClient();
@@ -114,7 +110,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     @Override protected void onResume() {
         super.onResume();
         if (gyro != null) sensors.registerListener(this, gyro, SensorManager.SENSOR_DELAY_GAME);
-        if (rotation != null) sensors.registerListener(this, rotation, SensorManager.SENSOR_DELAY_GAME);
+        if (accel != null) sensors.registerListener(this, accel, SensorManager.SENSOR_DELAY_GAME);
     }
 
     @Override protected void onPause() {
@@ -133,47 +129,56 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     @Override public void onSensorChanged(SensorEvent e) {
-        if (e.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR ||
-            e.sensor.getType() == Sensor.TYPE_GAME_ROTATION_VECTOR) {
-
-            float[] r = new float[9];
-            SensorManager.getRotationMatrixFromVector(r, e.values);
-            float[] o = new float[3];
-            SensorManager.getOrientation(r, o);
-            float rawReference = (float)Math.toDegrees(o[2]);
-
-            float[] q = new float[4];
-            SensorManager.getQuaternionFromVector(q, e.values);
-            currentQuaternion = q;
-
-            if (view != null && view.mode == 0 && calibrationQuaternion != null && referenceCalibrationReady) {
-                // Extract exact relative 2D twist around the physical steering axis
-                float[] rel = relativeQuaternion(calibrationQuaternion, q);
-                float w = rel[0], z = rel[3];
-                if (w < 0f) { w = -w; z = -z; }
-                
-                // Directly calculate exact steering angle without dead reckoning/drift.
-                // When physical pose returns to calibration orientation, gyroAngle MUST equal 0.0°.
-                float calculatedSteerDeg = (float)Math.toDegrees(-2.0 * Math.atan2(z, w));
-
-                float half = view.rangeDeg / 2f;
-                gyroAngle = clamp(calculatedSteerDeg, -half, half);
+        if (e.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
+            currentGravity = e.values.clone();
+            
+            float norm = (float)Math.sqrt(e.values[0]*e.values[0] + e.values[1]*e.values[1] + e.values[2]*e.values[2]);
+            if (norm > 0) {
+                float pitch = (float)Math.toDegrees(Math.asin(clamp(e.values[1]/norm, -1f, 1f)));
+                tiltAngle = clamp(pitch, -45f, 45f);
             }
+        } 
+        else if (e.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
+            if (lastGyroNs == 0) lastGyroNs = e.timestamp;
+            float dt = (e.timestamp - lastGyroNs) / 1_000_000_000f;
+            lastGyroNs = e.timestamp;
 
-            tiltAngle = clamp(rawReference, -45f, 45f);
+            if (dt > 0 && dt < 0.2f) {
+                float rateDeg = (float)Math.toDegrees(e.values[2]);
+                rawGyroIntegratedDeg -= rateDeg * dt;
+
+                // Continuous Proportional Gravity Correction Loop
+                if (calibrationGravity != null && currentGravity != null) {
+                    float dot = (calibrationGravity[0]*currentGravity[0] + 
+                                 calibrationGravity[1]*currentGravity[1] + 
+                                 calibrationGravity[2]*currentGravity[2]);
+                    
+                    float normCalib = (float)Math.sqrt(calibrationGravity[0]*calibrationGravity[0] + 
+                                                      calibrationGravity[1]*calibrationGravity[1] + 
+                                                      calibrationGravity[2]*calibrationGravity[2]);
+                    
+                    float normCurr = (float)Math.sqrt(currentGravity[0]*currentGravity[0] + 
+                                                     currentGravity[1]*currentGravity[1] + 
+                                                     currentGravity[2]*currentGravity[2]);
+
+                    if (normCalib > 0 && normCurr > 0) {
+                        float cosTheta = clamp(dot / (normCalib * normCurr), -1f, 1f);
+                        
+                        // Proximity weight: W=1.0 at physical calibration posture, drops smoothly to 0.0 during turns
+                        float proximityWeight = (float)Math.pow(Math.max(0f, cosTheta), 4.0);
+
+                        // Asymptotically pull offset back to calibrated zero without jumps or snaps
+                        float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
+                        zeroCorrectionOffset += currentError * (proximityWeight * 0.08f * (dt * 60f));
+                    }
+                }
+
+                float smoothSteerAngle = rawGyroIntegratedDeg - zeroCorrectionOffset;
+                float half = view == null ? 450f : view.rangeDeg / 2f;
+                gyroAngle = clamp(smoothSteerAngle, -half, half);
+            }
         }
         if (view != null) view.invalidate();
-    }
-
-    static float[] relativeQuaternion(float[] a, float[] b) {
-        float aw=a[0], ax=a[1], ay=a[2], az=a[3];
-        float bw=b[0], bx=b[1], by=b[2], bz=b[3];
-        return new float[] {
-            aw*bw + ax*bx + ay*by + az*bz,
-            aw*bx - ax*bw - ay*bz + az*by,
-            aw*by + ax*bz - ay*bw - az*bx,
-            aw*bz - ax*by + ay*bx - az*bw
-        };
     }
 
     @Override public void onAccuracyChanged(Sensor s, int a) {}
@@ -284,13 +289,11 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     void calibrate() {
         gyroAngle = 0f;
+        rawGyroIntegratedDeg = 0f;
+        zeroCorrectionOffset = 0f;
 
-        if (currentQuaternion != null) {
-            calibrationQuaternion = currentQuaternion.clone();
-            referenceCalibrationReady = true;
-        } else {
-            calibrationQuaternion = null;
-            referenceCalibrationReady = false;
+        if (currentGravity != null) {
+            calibrationGravity = currentGravity.clone();
         }
 
         view.wheelAngleDeg = 0f;
@@ -339,7 +342,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         boolean cameraClickPending=false;
         boolean wheelReturning = false;
         int wheelPointerId = -1;
-        int mode = 2;
+        int mode = 0;
         int rangeDeg = 900;
         final int[] ranges = {360, 540, 720, 900, 1080};
         final String[] buttonNames = {
