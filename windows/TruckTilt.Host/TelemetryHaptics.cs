@@ -14,10 +14,15 @@ internal sealed class TelemetryHaptics : IDisposable
 
     // Rev. 12 shared-memory offsets from scs-telemetry-common.hpp.
     private const int SdkActiveOffset = 0;
+    private const int TelemetryRevisionOffset = 40; // scs_values.telemetry_plugin_revision
     private const int GearsOffset = 68;             // config_ui.gears
     private const int GearOffset = 500;             // truck_i.gear
     private const int EngineRpmMaxOffset = 740;     // config_f.engineRpmMax
     private const int EngineRpmOffset = 948;        // truck_f.engineRpm
+    private const int UserSteerOffset = 956;        // truck_f.userSteer
+    private const int GameSteerOffset = 972;        // truck_f.gameSteer
+    private const int WheelSteeringOffset = 1200;   // truck_f.truck_wheelSteering[0]
+    private const int SteerableWheelsOffset = 1500;  // config_b.truckWheelSteerable[0]
     private const int WheelSubstanceOffset = 96;    // truck_ui.truck_wheelSubstance[0]
     private const int PoweredWheelsOffset = 1516;   // config_b.truckWheelPowered[0]
     private const int EngineEnabledOffset = 1576;   // truck_b.engineEnabled
@@ -29,6 +34,9 @@ internal sealed class TelemetryHaptics : IDisposable
     // During this window we establish baselines but emit no telemetry-driven haptics.
     private const int StartupGraceMs = 2000;
     private const int EngineTransitionDebounceMs = 200;
+    private const int SteeringDiagnosticIntervalMs = 1000;
+    private static readonly bool SteeringDiagnosticsEnabled =
+        string.Equals(Environment.GetEnvironmentVariable("TRUCKTILT_STEERING_DIAGNOSTICS"), "1", StringComparison.Ordinal);
 
     private readonly Action<string> _sendHaptic;
     private readonly CancellationTokenSource _cts = new();
@@ -51,6 +59,8 @@ internal sealed class TelemetryHaptics : IDisposable
     private DateTime _lastWaitingLog = DateTime.MinValue;
     private DateTime _telemetryActiveSince = DateTime.MinValue;
     private bool _startupBaselineReady;
+    private DateTime _lastSteeringDiagnostic = DateTime.MinValue;
+    private bool _steeringDiagnosticVersionLogged;
 
     public TelemetryHaptics(Action<string> sendHaptic) => _sendHaptic = sendHaptic;
 
@@ -134,6 +144,8 @@ internal sealed class TelemetryHaptics : IDisposable
 
     private void ProcessSnapshot()
     {
+        LogSteeringDiagnosticIfDue();
+
         int gear = ReadInt32(GearOffset);
         int gears = (int)Math.Min(64u, ReadUInt32(GearsOffset));
         float rpm = ReadFloat(EngineRpmOffset);
@@ -249,6 +261,48 @@ internal sealed class TelemetryHaptics : IDisposable
             SendRumbleIfChanged(rumbleIntensity, 50);
         else
             SendRumbleStop();
+    }
+
+
+    // Read-only diagnostic. It never feeds telemetry back into Android steering.
+    // Enable by setting TRUCKTILT_STEERING_DIAGNOSTICS=1 before launching the host.
+    private void LogSteeringDiagnosticIfDue()
+    {
+        if (!SteeringDiagnosticsEnabled) return;
+
+        var now = DateTime.UtcNow;
+        if ((now - _lastSteeringDiagnostic).TotalMilliseconds < SteeringDiagnosticIntervalMs) return;
+        _lastSteeringDiagnostic = now;
+
+        uint revision = ReadUInt32(TelemetryRevisionOffset);
+        if (!_steeringDiagnosticVersionLogged)
+        {
+            Console.WriteLine($"STEER-DIAG: SCSTelemetry revision={revision}; expected Rev.12 layout.");
+            _steeringDiagnosticVersionLogged = true;
+        }
+
+        // These offsets are only defined for the Rev.12 shared-memory layout.
+        if (revision != 12)
+        {
+            Console.WriteLine("STEER-DIAG: skipped sample because telemetry revision is not 12.");
+            return;
+        }
+
+        float userSteer = ReadFloat(UserSteerOffset);
+        float gameSteer = ReadFloat(GameSteerOffset);
+        int wheelCount = (int)Math.Min(16u, ReadUInt32(80));
+        var wheelValues = new StringBuilder();
+        int logged = 0;
+        for (int i = 0; i < wheelCount && logged < 4; i++)
+        {
+            if (ReadByte(SteerableWheelsOffset + i) == 0) continue;
+            if (wheelValues.Length > 0) wheelValues.Append(", ");
+            float turns = ReadFloat(WheelSteeringOffset + i * sizeof(float));
+            wheelValues.Append($"w{i}={turns:F4}turn/{turns * 360f:F1}deg");
+            logged++;
+        }
+
+        Console.WriteLine($"STEER-DIAG: user={userSteer:+0.000;-0.000;0.000} effective={gameSteer:+0.000;-0.000;0.000} roadWheels=[{(wheelValues.Length == 0 ? "none" : wheelValues.ToString())}]");
     }
 
     private void SendRumbleIfChanged(int intensity, int minIntervalMs)
