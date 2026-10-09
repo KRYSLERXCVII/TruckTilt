@@ -354,22 +354,23 @@ public class MainActivity extends Activity implements SensorEventListener {
                 if (w < 0f) { w = -w; z = -z; }
                 referenceTwistDeg = (float)Math.toDegrees(-2.0 * Math.atan2(z, w));
 
-                // Twist becomes unreliable when the phone is tilted far from its
-                // calibrated plane. Confidence falls smoothly rather than requiring
-                // a stationary return to calibration.
-                float totalTilt = quaternionAngleBetween(calibrationQuaternion, q);
-                if (totalTilt <= HYBRID_FULL_CONFIDENCE_TILT_DEG) referenceConfidence = 1f;
-                else if (totalTilt >= HYBRID_ZERO_CONFIDENCE_TILT_DEG) referenceConfidence = 0f;
+                // Confidence must measure swing/tilt away from the steering axis,
+                // NOT total rotation from calibration. Total rotation includes the
+                // legitimate wheel angle, so using it would disable correction after
+                // roughly 70 degrees of normal steering.
+                float twistNorm = (float)Math.sqrt(w * w + z * z);
+                twistNorm = clamp(twistNorm, 0f, 1f);
+                float swingDeg = (float)Math.toDegrees(2.0 * Math.acos(twistNorm));
+                if (swingDeg <= HYBRID_FULL_CONFIDENCE_TILT_DEG) referenceConfidence = 1f;
+                else if (swingDeg >= HYBRID_ZERO_CONFIDENCE_TILT_DEG) referenceConfidence = 0f;
                 else {
-                    float t = (totalTilt - HYBRID_FULL_CONFIDENCE_TILT_DEG) /
+                    float t = (swingDeg - HYBRID_FULL_CONFIDENCE_TILT_DEG) /
                             (HYBRID_ZERO_CONFIDENCE_TILT_DEG - HYBRID_FULL_CONFIDENCE_TILT_DEG);
                     referenceConfidence = 1f - t * t * (3f - 2f * t);
                 }
-                // Discount reference correction during very fast movement where
-                // the fused orientation may lag the raw gyro.
-                float speedWeight = 1f / (1f + (referenceRateDeg / 200f) *
-                        (referenceRateDeg / 200f));
-                referenceConfidence *= speedWeight;
+                // Keep reference correction active during hard turns. The correction
+                // itself is rate-limited in the gyro branch; suppressing it by turn
+                // speed caused the exact hard-turn accumulation reported in V10.
                 hybridReferenceReady = true;
             }
 
