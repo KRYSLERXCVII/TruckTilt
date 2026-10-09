@@ -64,7 +64,14 @@ public class MainActivity extends Activity implements SensorEventListener {
     float[] previousQuaternion = null;
     long lastGyroSampleNs = 0L;
     long lastReferenceTimestampNs = 0L;
-    float referenceTwistDeg = 0f;
+    // Continuous twist tracking: the quaternion twist itself is wrapped to
+    // a principal angle. Unwrap sample-to-sample deltas so crossing +/-180
+    // degrees does not make the hybrid reference jump backwards.
+    float referenceTwistDeg = 0f; // Unwrapped reference angle used by hybrid correction.
+    float previousWrappedTwistDeg = 0f;
+    boolean referenceTwistInitialized = false;
+    long previousTwistTimestampNs = 0L;
+    static final long REFERENCE_TWIST_MAX_GAP_NS = 250_000_000L;
     float referenceConfidence = 0f;
     float referenceInnovationDeg = 0f;
     float referenceCorrectionRateDeg = 0f;
@@ -352,7 +359,29 @@ public class MainActivity extends Activity implements SensorEventListener {
                 float[] rel = relativeQuaternion(calibrationQuaternion, q);
                 float w = rel[0], z = rel[3];
                 if (w < 0f) { w = -w; z = -z; }
-                referenceTwistDeg = (float)Math.toDegrees(-2.0 * Math.atan2(z, w));
+
+                // The extracted twist is a principal angle in roughly [-180, 180].
+                // Track the shortest valid delta between consecutive samples so the
+                // reference remains continuous when it crosses the +/-180 boundary.
+                float wrappedTwistDeg = (float)Math.toDegrees(-2.0 * Math.atan2(z, w));
+                if (!referenceTwistInitialized) {
+                    referenceTwistDeg = wrappedTwistDeg;
+                    previousWrappedTwistDeg = wrappedTwistDeg;
+                    previousTwistTimestampNs = e.timestamp;
+                    referenceTwistInitialized = true;
+                } else {
+                    long twistGapNs = e.timestamp - previousTwistTimestampNs;
+                    if (twistGapNs > 0L && twistGapNs <= REFERENCE_TWIST_MAX_GAP_NS) {
+                        float twistDeltaDeg = normalizeDelta(
+                                wrappedTwistDeg - previousWrappedTwistDeg);
+                        referenceTwistDeg += twistDeltaDeg;
+                    }
+                    // If the stream has a long gap, don't guess how many turns
+                    // occurred while samples were missing. Re-anchor the wrapped
+                    // sample without injecting a potentially incorrect angle jump.
+                    previousWrappedTwistDeg = wrappedTwistDeg;
+                    previousTwistTimestampNs = e.timestamp;
+                }
 
                 // Confidence must measure swing/tilt away from the steering axis,
                 // NOT total rotation from calibration. Total rotation includes the
@@ -549,6 +578,9 @@ public class MainActivity extends Activity implements SensorEventListener {
         lastReferenceMotionDeg = 0f;
         lastReferenceTimestampNs = 0L;
         referenceTwistDeg = 0f;
+        previousWrappedTwistDeg = 0f;
+        referenceTwistInitialized = false;
+        previousTwistTimestampNs = 0L;
         referenceConfidence = 0f;
         referenceInnovationDeg = 0f;
         referenceCorrectionRateDeg = 0f;
