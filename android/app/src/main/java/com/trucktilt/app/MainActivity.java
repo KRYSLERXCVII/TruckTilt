@@ -67,7 +67,8 @@ public class MainActivity extends Activity implements SensorEventListener {
     float referenceTwistDeg = 0f;
     float referenceConfidence = 0f;
     float referenceInnovationDeg = 0f;
-    float referenceCorrectionRateDeg = 0f;\n    float referenceRateDeg = 0f;
+    float referenceCorrectionRateDeg = 0f;
+    float referenceRateDeg = 0f;
     boolean hybridReferenceReady = false;
     static final float HYBRID_MAX_CORRECTION_DEG_PER_SEC = 12f;
     static final float HYBRID_FULL_CONFIDENCE_TILT_DEG = 35f;
