@@ -66,6 +66,20 @@ public class MainActivity extends Activity implements SensorEventListener {
     long lastMeaningfulRotationNs = 0;
     long referenceNearSinceNs = 0;
     long correctionSettledSinceNs = 0;
+
+    // V7: calibration captures a short average of the real gyro Z bias instead
+    // of trusting one sample. While that capture is happening, the steering
+    // integrator is held at zero so sensor noise cannot move the wheel.
+    boolean calibrationBiasCapture = false;
+    long calibrationBiasStartNs = 0L;
+    double calibrationBiasSum = 0.0;
+    int calibrationBiasSamples = 0;
+    static final long CALIBRATION_BIAS_CAPTURE_MS = 650L;
+    static final float STATIONARY_RATE_LIMIT_DEG_PER_SEC = 1.20f;
+    static final float STATIONARY_REFERENCE_LIMIT_DEG_PER_SEC = 0.70f;
+    static final long STATIONARY_HOLD_MS = 350L;
+    boolean stationaryHold = false;
+    long stationarySinceNs = 0L;
     float gyroCorrectionOffset = 0f;
     float targetCorrectionOffset = 0f;
 
@@ -187,30 +201,78 @@ public class MainActivity extends Activity implements SensorEventListener {
                 // allowed. This prevents slow intentional steering from being
                 // learned as sensor bias.
                 boolean referenceStill = true;
+                float referenceRate = 0f;
                 if (currentQuaternion != null && lastReferenceSampleNs != 0L &&
                         e.timestamp > lastReferenceSampleNs) {
-                    float refRate = lastReferenceMotionDeg * 1_000_000_000f /
+                    referenceRate = lastReferenceMotionDeg * 1_000_000_000f /
                             (e.timestamp - lastReferenceSampleNs);
-                    referenceStill = refRate <= BIAS_REFERENCE_RATE_DEG_PER_SEC;
+                    referenceStill = referenceRate <= STATIONARY_REFERENCE_LIMIT_DEG_PER_SEC;
                 }
 
-                boolean phoneStill = rawRateMagnitudeDeg <= BIAS_STILL_RATE_DEG_PER_SEC
+                boolean phoneStill = rawRateMagnitudeDeg <= STATIONARY_RATE_LIMIT_DEG_PER_SEC
                         && referenceStill;
 
-                // Learn only the rate bias. Never change the current steering
-                // angle just because the phone is being held still.
+                // V7 calibration: collect a real bias average for a short period.
+                // This removes the common case where the first gyro sample at
+                // CALIBRATE is not representative of the sensor's true zero.
+                if (calibrationBiasCapture) {
+                    if (calibrationBiasStartNs == 0L) calibrationBiasStartNs = e.timestamp;
+
+                    if (phoneStill) {
+                        calibrationBiasSum += e.values[2];
+                        calibrationBiasSamples++;
+                    }
+
+                    if ((e.timestamp - calibrationBiasStartNs) >=
+                            CALIBRATION_BIAS_CAPTURE_MS * 1_000_000L) {
+                        if (calibrationBiasSamples > 0) {
+                            gyroBias = (float)(calibrationBiasSum / calibrationBiasSamples);
+                        }
+                        calibrationBiasCapture = false;
+                        lowRateSinceNs = e.timestamp;
+                        stationarySinceNs = e.timestamp;
+                        stationaryHold = phoneStill;
+                    }
+
+                    // Never integrate during calibration capture. The calibrated
+                    // physical orientation remains exactly 0 while samples are
+                    // being collected.
+                    gyroRawAngle = 0f;
+                    gyroAngle = 0f;
+                    if (view != null) view.invalidate();
+                    return;
+                }
+
+                // Learn only a tiny rate bias while the phone is genuinely still.
+                // The reference sensor is the guard against accidentally learning
+                // a slow intentional steering movement.
                 if (phoneStill) {
                     if (lowRateSinceNs == 0) lowRateSinceNs = e.timestamp;
                     if ((e.timestamp - lowRateSinceNs) >= BIAS_STILL_TIME_MS * 1_000_000L) {
                         float alpha = 1f - (float)Math.exp(-dt / BIAS_TAU_SECONDS);
                         gyroBias += (e.values[2] - gyroBias) * alpha;
                     }
+
+                    // Once confirmed still, freeze integration of the residual
+                    // sensor noise. This is NOT recentering: the current steering
+                    // angle is preserved and only sub-threshold sensor noise is
+                    // prevented from accumulating forever.
+                    if (stationarySinceNs == 0) stationarySinceNs = e.timestamp;
+                    if ((e.timestamp - stationarySinceNs) >=
+                            STATIONARY_HOLD_MS * 1_000_000L) {
+                        stationaryHold = true;
+                    }
                 } else {
                     lowRateSinceNs = 0;
+                    stationarySinceNs = 0;
+                    stationaryHold = false;
                 }
 
-                // Gyroscope remains the sole fast steering sensor.
-                gyroRawAngle -= gyroRateDeg * dt;
+                // Gyroscope remains the sole fast steering sensor. Once the phone
+                // is confirmed stationary, residual gyro noise is not integrated.
+                if (!stationaryHold) {
+                    gyroRawAngle -= gyroRateDeg * dt;
+                }
 
                 if (view != null && view.mode == 0 && referenceCalibrationReady) {
                     // A large rotation marks a possible return-to-calibration
@@ -462,8 +524,16 @@ public class MainActivity extends Activity implements SensorEventListener {
         // moving target and it is never replaced automatically while driving.
         gyroAngle = 0f;
         gyroRawAngle = 0f;
-        gyroBias = latestGyroZ;
+        // Do not trust one instantaneous sample as the calibration bias.
+        // Capture a short stationary average in onSensorChanged().
+        gyroBias = 0f;
+        calibrationBiasCapture = true;
+        calibrationBiasStartNs = 0L;
+        calibrationBiasSum = 0.0;
+        calibrationBiasSamples = 0;
         lowRateSinceNs = 0;
+        stationarySinceNs = 0L;
+        stationaryHold = true;
         lastGyroNs = 0;
         lastReferenceSampleNs = 0L;
         lastReferenceMotionDeg = 0f;
