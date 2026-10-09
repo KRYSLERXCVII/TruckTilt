@@ -23,7 +23,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * TruckTilt v0.9 — symmetrical balanced baseline build.
+ * TruckTilt v0.9 — ultra-stable physical zero baseline anchor.
  */
 public class MainActivity extends Activity implements SensorEventListener {
     static final int PORT = 45454;
@@ -37,9 +37,12 @@ public class MainActivity extends Activity implements SensorEventListener {
     float gyroAngle = 0f, tiltAngle = 0f;
     long lastGyroNs = 0L;
 
-    // Physical Baseline & Dynamic Bias Tracking
-    float[] calibrationGravity = null;
-    float[] currentGravity = null;
+    // Physical Baseline & Gravity Deadband Tracking
+    float[] calibrationGravity = new float[3];
+    float[] currentGravity = new float[3];
+    boolean isCalibrated = false;
+    int calibSampleCount = 0;
+    
     float rawGyroIntegratedDeg = 0f;
     float zeroCorrectionOffset = 0f;
     float gyroBiasZ = 0f;
@@ -131,11 +134,27 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     @Override public void onSensorChanged(SensorEvent e) {
         if (e.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
-            currentGravity = e.values.clone();
+            // Low-pass filter accelerometer to avoid high frequency vibration jitter
+            currentGravity[0] = currentGravity[0] * 0.85f + e.values[0] * 0.15f;
+            currentGravity[1] = currentGravity[1] * 0.85f + e.values[1] * 0.15f;
+            currentGravity[2] = currentGravity[2] * 0.85f + e.values[2] * 0.15f;
+
+            if (calibSampleCount > 0) {
+                calibrationGravity[0] += e.values[0];
+                calibrationGravity[1] += e.values[1];
+                calibrationGravity[2] += e.values[2];
+                calibSampleCount--;
+                if (calibSampleCount == 0) {
+                    calibrationGravity[0] /= 10f;
+                    calibrationGravity[1] /= 10f;
+                    calibrationGravity[2] /= 10f;
+                    isCalibrated = true;
+                }
+            }
             
-            float norm = (float)Math.sqrt(e.values[0]*e.values[0] + e.values[1]*e.values[1] + e.values[2]*e.values[2]);
+            float norm = (float)Math.sqrt(currentGravity[0]*currentGravity[0] + currentGravity[1]*currentGravity[1] + currentGravity[2]*currentGravity[2]);
             if (norm > 0) {
-                float pitch = (float)Math.toDegrees(Math.asin(clamp(e.values[1]/norm, -1f, 1f)));
+                float pitch = (float)Math.toDegrees(Math.asin(clamp(currentGravity[1]/norm, -1f, 1f)));
                 tiltAngle = clamp(pitch, -45f, 45f);
             }
         } 
@@ -151,12 +170,7 @@ public class MainActivity extends Activity implements SensorEventListener {
 
                 float turnSpeedDegPerSec = Math.abs(rateDeg);
 
-                // Check Symmetrical Alignment against Physical Baseline
-                if (calibrationGravity != null && currentGravity != null) {
-                    float dot = (calibrationGravity[0]*currentGravity[0] + 
-                                 calibrationGravity[1]*currentGravity[1] + 
-                                 calibrationGravity[2]*currentGravity[2]);
-                    
+                if (isCalibrated) {
                     float normCalib = (float)Math.sqrt(calibrationGravity[0]*calibrationGravity[0] + 
                                                       calibrationGravity[1]*calibrationGravity[1] + 
                                                       calibrationGravity[2]*calibrationGravity[2]);
@@ -165,19 +179,23 @@ public class MainActivity extends Activity implements SensorEventListener {
                                                      currentGravity[1]*currentGravity[1] + 
                                                      currentGravity[2]*currentGravity[2]);
 
-                    if (normCalib > 0 && normCurr > 0) {
+                    // Verify valid gravity vector strength (0.85g to 1.15g) to reject dynamic movement noise
+                    if (normCalib > 0 && normCurr > 8.3f && normCurr < 11.3f) {
+                        float dot = (calibrationGravity[0]*currentGravity[0] + 
+                                     calibrationGravity[1]*currentGravity[1] + 
+                                     calibrationGravity[2]*currentGravity[2]);
+
                         float cosTheta = clamp(dot / (normCalib * normCurr), -1f, 1f);
                         float devAngle = (float)Math.toDegrees(Math.acos(cosTheta));
 
-                        // Symmetrical Rest Lock: Only apply correction near physical resting position (< 6°)
-                        // when motion is low (< 0.8°/s) to prevent lopsided bias during turns
-                        if (devAngle < 6.0f && turnSpeedDegPerSec < 0.8f) {
-                            // Update micro gyro bias to eliminate long-term rate drift
-                            gyroBiasZ += (e.values[2] - gyroBiasZ) * (0.01f * dt * 60f);
+                        // Symmetrical resting alignment: Restores absolute 0° only when holding near baseline posture
+                        if (devAngle < 8.0f && turnSpeedDegPerSec < 1.2f) {
+                            // Continuously refine gyroscope stationary bias drift
+                            gyroBiasZ += (e.values[2] - gyroBiasZ) * (0.005f * dt * 60f);
 
-                            // Smoothly settle remaining error to exact 0° physical center
+                            // Smoothly lock center reference back to exact zero baseline
                             float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
-                            zeroCorrectionOffset += currentError * (0.25f * dt * 60f);
+                            zeroCorrectionOffset += currentError * (0.18f * dt * 60f);
                         }
                     }
                 }
@@ -302,9 +320,12 @@ public class MainActivity extends Activity implements SensorEventListener {
         zeroCorrectionOffset = 0f;
         gyroBiasZ = 0f;
 
-        if (currentGravity != null) {
-            calibrationGravity = currentGravity.clone();
-        }
+        // Initiate multi-sample gravity averaging for precise center pose tracking
+        calibrationGravity[0] = 0f;
+        calibrationGravity[1] = 0f;
+        calibrationGravity[2] = 0f;
+        calibSampleCount = 10;
+        isCalibrated = false;
 
         view.wheelAngleDeg = 0f;
         view.steer = 0f;
