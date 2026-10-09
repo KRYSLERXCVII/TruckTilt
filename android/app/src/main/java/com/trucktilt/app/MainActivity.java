@@ -37,81 +37,10 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     ControllerView view;
     SensorManager sensors;
-    Sensor gyro, rotation, gameRotation;
+    Sensor gyro, rotation;
     float gyroAngle = 0f, gyroBias = 0f, tiltAngle = 0f;
-    long lastGyroNs = 0L;
-    float gyroRawAngle = 0f;
+    long lastGyroNs = 0;
 
-    // Gyro-rate bias estimation is deliberately conservative. It is used only
-    // to reduce a tiny sensor bias; it never recenters a deliberate steering
-    // position.
-    float latestGyroZ = 0f;
-    long lowRateSinceNs = 0;
-    long lastReferenceSampleNs = 0L;
-    float lastReferenceMotionDeg = 0f;
-    static final float BIAS_STILL_RATE_DEG_PER_SEC = 0.55f;
-    static final float BIAS_REFERENCE_RATE_DEG_PER_SEC = 0.45f;
-    static final long BIAS_STILL_TIME_MS = 700L;
-    static final float BIAS_TAU_SECONDS = 2.5f;
-
-    // Fixed calibration reference for GYRO WHEEL.
-    // When CALIBRATE is pressed, the current full rotation-vector quaternion is
-    // saved as the physical 0-degree orientation. The reference never follows
-    // the steering angle. It is only used to recognize when the phone has
-    // physically returned to that original orientation after a large rotation.
-    float[] calibrationQuaternion = null;
-    float[] currentQuaternion = null;
-    float[] previousQuaternion = null;
-    long lastGyroSampleNs = 0L;
-    long lastReferenceTimestampNs = 0L;
-    // Continuous twist tracking: the quaternion twist itself is wrapped to
-    // a principal angle. Unwrap sample-to-sample deltas so crossing +/-180
-    // degrees does not make the hybrid reference jump backwards.
-    float referenceTwistDeg = 0f; // Unwrapped reference angle used by hybrid correction.
-    float previousWrappedTwistDeg = 0f;
-    boolean referenceTwistInitialized = false;
-    long previousTwistTimestampNs = 0L;
-    static final long REFERENCE_TWIST_MAX_GAP_NS = 250_000_000L;
-    float referenceConfidence = 0f;
-    float referenceInnovationDeg = 0f;
-    float referenceCorrectionRateDeg = 0f;
-    float referenceRateDeg = 0f;
-    boolean hybridReferenceReady = false;
-    static final float HYBRID_MAX_CORRECTION_DEG_PER_SEC = 12f;
-    static final float HYBRID_FULL_CONFIDENCE_TILT_DEG = 35f;
-    static final float HYBRID_ZERO_CONFIDENCE_TILT_DEG = 70f;
-    static final float HYBRID_MAX_INNOVATION_DEG = 75f;
-    static final float HYBRID_REFERENCE_TAU_SECONDS = 1.25f;
-    boolean referenceCalibrationReady = false;
-    boolean referenceReturnCandidate = false;
-    long lastMeaningfulRotationNs = 0;
-    long referenceNearSinceNs = 0;
-    long correctionSettledSinceNs = 0;
-
-    // V7: calibration captures a short average of the real gyro Z bias instead
-    // of trusting one sample. While that capture is happening, the steering
-    // integrator is held at zero so sensor noise cannot move the wheel.
-    boolean calibrationBiasCapture = false;
-    long calibrationBiasStartNs = 0L;
-    double calibrationBiasSum = 0.0;
-    int calibrationBiasSamples = 0;
-    static final long CALIBRATION_BIAS_CAPTURE_MS = 650L;
-    static final float STATIONARY_RATE_LIMIT_DEG_PER_SEC = 1.20f;
-    static final float STATIONARY_REFERENCE_LIMIT_DEG_PER_SEC = 0.70f;
-    static final long STATIONARY_HOLD_MS = 350L;
-    boolean stationaryHold = false;
-    long stationarySinceNs = 0L;
-    float gyroCorrectionOffset = 0f;
-    float targetCorrectionOffset = 0f;
-
-    static final float ROTATION_START_DEG_PER_SEC = 12f;
-    static final long REFERENCE_SETTLE_MS = 220L;
-    static final float REFERENCE_RETURN_THRESHOLD_DEG = 7f;
-    static final float REFERENCE_DEPARTURE_THRESHOLD_DEG = 18f;
-    static final float MAX_REFERENCE_CORRECTION_DEG = 540f;
-    static final float REFERENCE_CORRECTION_STEP = 0.10f;
-    static final float REFERENCE_REBASE_EPSILON_DEG = 0.08f;
-    static final long REFERENCE_REBASE_HOLD_MS = 350L;
 
 
 
@@ -155,9 +84,7 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         sensors = (SensorManager)getSystemService(SENSOR_SERVICE);
         gyro = sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
-        gameRotation = sensors.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
-        rotation = gameRotation != null ? gameRotation :
-                sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+        rotation = sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
 
         view = new ControllerView(this);
         net = new UdpClient();
@@ -209,233 +136,25 @@ public class MainActivity extends Activity implements SensorEventListener {
             lastGyroNs = e.timestamp;
 
             if (dt > 0 && dt < .2f) {
-                latestGyroZ = e.values[2];
-                float gyroRateDeg = (float)Math.toDegrees(e.values[2] - gyroBias);
-                float absRate = Math.abs(gyroRateDeg);
+                // Gyroscope is the sole steering sensor in GYRO WHEEL mode.
+                // Do not automatically zero or correct the accumulated angle.
+                gyroAngle -= Math.toDegrees(e.values[2] - gyroBias) * dt;
 
-                // Use all three gyro axes for stationary detection. Looking only
-                // at Z can mistake phone vibration/X-Y movement for a valid
-                // zero-rate sample and slowly corrupt the Z bias.
-                float rawRateMagnitudeDeg = (float)Math.toDegrees(
-                        Math.sqrt(e.values[0] * e.values[0] +
-                                  e.values[1] * e.values[1] +
-                                  e.values[2] * e.values[2]));
-
-                // Reference motion must also be quiet before bias learning is
-                // allowed. This prevents slow intentional steering from being
-                // learned as sensor bias.
-                boolean referenceStill = true;
-                float referenceRate = 0f;
-                if (currentQuaternion != null && lastReferenceSampleNs != 0L &&
-                        e.timestamp > lastReferenceSampleNs) {
-                    referenceRate = lastReferenceMotionDeg * 1_000_000_000f /
-                            (e.timestamp - lastReferenceSampleNs);
-                    referenceStill = referenceRate <= STATIONARY_REFERENCE_LIMIT_DEG_PER_SEC;
-                }
-
-                boolean phoneStill = rawRateMagnitudeDeg <= STATIONARY_RATE_LIMIT_DEG_PER_SEC
-                        && referenceStill;
-
-                // V7 calibration: collect a real bias average for a short period.
-                // This removes the common case where the first gyro sample at
-                // CALIBRATE is not representative of the sensor's true zero.
-                if (calibrationBiasCapture) {
-                    if (calibrationBiasStartNs == 0L) calibrationBiasStartNs = e.timestamp;
-
-                    if (phoneStill) {
-                        calibrationBiasSum += e.values[2];
-                        calibrationBiasSamples++;
-                    }
-
-                    if ((e.timestamp - calibrationBiasStartNs) >=
-                            CALIBRATION_BIAS_CAPTURE_MS * 1_000_000L) {
-                        if (calibrationBiasSamples > 0) {
-                            gyroBias = (float)(calibrationBiasSum / calibrationBiasSamples);
-                        }
-                        calibrationBiasCapture = false;
-                        lowRateSinceNs = e.timestamp;
-                        stationarySinceNs = e.timestamp;
-                        stationaryHold = phoneStill;
-                    }
-
-                    // Never integrate during calibration capture. The calibrated
-                    // physical orientation remains exactly 0 while samples are
-                    // being collected.
-                    gyroRawAngle = 0f;
-                    gyroAngle = 0f;
-                    if (view != null) view.invalidate();
-                    return;
-                }
-
-                // Learn only a tiny rate bias while the phone is genuinely still.
-                // The reference sensor is the guard against accidentally learning
-                // a slow intentional steering movement.
-                if (phoneStill) {
-                    if (lowRateSinceNs == 0) lowRateSinceNs = e.timestamp;
-                    if ((e.timestamp - lowRateSinceNs) >= BIAS_STILL_TIME_MS * 1_000_000L) {
-                        float alpha = 1f - (float)Math.exp(-dt / BIAS_TAU_SECONDS);
-                        gyroBias += (e.values[2] - gyroBias) * alpha;
-                    }
-
-                    // Once confirmed still, freeze integration of the residual
-                    // sensor noise. This is NOT recentering: the current steering
-                    // angle is preserved and only sub-threshold sensor noise is
-                    // prevented from accumulating forever.
-                    if (stationarySinceNs == 0) stationarySinceNs = e.timestamp;
-                    if ((e.timestamp - stationarySinceNs) >=
-                            STATIONARY_HOLD_MS * 1_000_000L) {
-                        stationaryHold = true;
-                    }
-                } else {
-                    lowRateSinceNs = 0;
-                    stationarySinceNs = 0;
-                    stationaryHold = false;
-                }
-
-                // Gyroscope remains the sole fast steering sensor. Once the phone
-                // is confirmed stationary, residual gyro noise is not integrated.
-                if (!stationaryHold) {
-                    gyroRawAngle -= gyroRateDeg * dt;
-                }
-
-                if (view != null && view.mode == 0 && referenceCalibrationReady &&
-                        currentQuaternion != null && calibrationQuaternion != null &&
-                        hybridReferenceReady) {
-                    // Continuous, rate-limited correction. The fixed orientation reference
-                    // corrects accumulated gyro error while moving; it does not require
-                    // holding the phone still at calibration pose.
-                    float refError = wrapDegrees(referenceTwistDeg - (gyroRawAngle + gyroCorrectionOffset));
-                    referenceInnovationDeg = refError;
-
-                    // Reject large disagreement when orientation confidence is low:
-                    // it is safer to temporarily run gyro-only than to cancel real steering.
-                    if (Math.abs(refError) <= HYBRID_MAX_INNOVATION_DEG &&
-                            referenceConfidence > 0.05f) {
-                        float kp = 1f / HYBRID_REFERENCE_TAU_SECONDS;
-                        float correctionRate = kp * refError * referenceConfidence;
-                        correctionRate = clamp(correctionRate,
-                                -HYBRID_MAX_CORRECTION_DEG_PER_SEC,
-                                HYBRID_MAX_CORRECTION_DEG_PER_SEC);
-                        // Limit correction per gyro sample. Do not reset/rebase the
-                        // accumulated angle and do not require a stationary pose.
-                        gyroCorrectionOffset += correctionRate * dt;
-                        referenceCorrectionRateDeg = correctionRate;
-                    } else {
-                        referenceCorrectionRateDeg = 0f;
-                    }
-                }
-
-                gyroAngle = gyroRawAngle + gyroCorrectionOffset;
-
+                // The selected steering range controls the actual virtual
+                // wheel travel: 360/540/720/900/1080 degrees.
                 float half = view == null ? 450f : view.rangeDeg / 2f;
                 gyroAngle = clamp(gyroAngle, -half, half);
             }
-        } else if (e.sensor.getType() == Sensor.TYPE_GAME_ROTATION_VECTOR ||
-                   e.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR) {
+        } else if (e.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR) {
             float[] r = new float[9];
             SensorManager.getRotationMatrixFromVector(r, e.values);
             float[] o = new float[3];
             SensorManager.getOrientation(r, o);
-            float rawReference = (float)Math.toDegrees(o[2]);
 
-            float[] q = new float[4];
-            SensorManager.getQuaternionFromVector(q, e.values);
-            if (currentQuaternion != null && lastReferenceSampleNs != 0L &&
-                    e.timestamp > lastReferenceSampleNs) {
-                long refDtNs = e.timestamp - lastReferenceSampleNs;
-                lastReferenceMotionDeg = quaternionAngleBetween(currentQuaternion, q);
-                referenceRateDeg = lastReferenceMotionDeg * 1_000_000_000f / refDtNs;
-            } else {
-                lastReferenceMotionDeg = 0f;
-                referenceRateDeg = 0f;
-            }
-            lastReferenceSampleNs = e.timestamp;
-            currentQuaternion = q;
-
-            if (view != null && view.mode == 0 && calibrationQuaternion != null &&
-                    referenceCalibrationReady) {
-                // Extract relative twist around the phone's Z steering axis.
-                // Use atan2 rather than acos for better small-angle conditioning.
-                float[] rel = relativeQuaternion(calibrationQuaternion, q);
-                float w = rel[0], z = rel[3];
-                if (w < 0f) { w = -w; z = -z; }
-
-                // The extracted twist is a principal angle in roughly [-180, 180].
-                // Track the shortest valid delta between consecutive samples so the
-                // reference remains continuous when it crosses the +/-180 boundary.
-                float wrappedTwistDeg = (float)Math.toDegrees(-2.0 * Math.atan2(z, w));
-                if (!referenceTwistInitialized) {
-                    referenceTwistDeg = wrappedTwistDeg;
-                    previousWrappedTwistDeg = wrappedTwistDeg;
-                    previousTwistTimestampNs = e.timestamp;
-                    referenceTwistInitialized = true;
-                } else {
-                    long twistGapNs = e.timestamp - previousTwistTimestampNs;
-                    if (twistGapNs > 0L && twistGapNs <= REFERENCE_TWIST_MAX_GAP_NS) {
-                        float twistDeltaDeg = normalizeDelta(
-                                wrappedTwistDeg - previousWrappedTwistDeg);
-                        referenceTwistDeg += twistDeltaDeg;
-                    }
-                    // If the stream has a long gap, don't guess how many turns
-                    // occurred while samples were missing. Re-anchor the wrapped
-                    // sample without injecting a potentially incorrect angle jump.
-                    previousWrappedTwistDeg = wrappedTwistDeg;
-                    previousTwistTimestampNs = e.timestamp;
-                }
-
-                // Confidence must measure swing/tilt away from the steering axis,
-                // NOT total rotation from calibration. Total rotation includes the
-                // legitimate wheel angle, so using it would disable correction after
-                // roughly 70 degrees of normal steering.
-                float twistNorm = (float)Math.sqrt(w * w + z * z);
-                twistNorm = clamp(twistNorm, 0f, 1f);
-                float swingDeg = (float)Math.toDegrees(2.0 * Math.acos(twistNorm));
-                if (swingDeg <= HYBRID_FULL_CONFIDENCE_TILT_DEG) referenceConfidence = 1f;
-                else if (swingDeg >= HYBRID_ZERO_CONFIDENCE_TILT_DEG) referenceConfidence = 0f;
-                else {
-                    float t = (swingDeg - HYBRID_FULL_CONFIDENCE_TILT_DEG) /
-                            (HYBRID_ZERO_CONFIDENCE_TILT_DEG - HYBRID_FULL_CONFIDENCE_TILT_DEG);
-                    referenceConfidence = 1f - t * t * (3f - 2f * t);
-                }
-                // Keep reference correction active during hard turns. The correction
-                // itself is rate-limited in the gyro branch; suppressing it by turn
-                // speed caused the exact hard-turn accumulation reported in V10.
-                hybridReferenceReady = true;
-            }
-
-            tiltAngle = clamp(rawReference, -45f, 45f);
+            // Rotation-vector remains available for GYRO TILT mode only.
+            tiltAngle = clamp((float)Math.toDegrees(o[2]), -45f, 45f);
         }
         if (view != null) view.invalidate();
-    }
-
-    static float wrapDegrees(float value) {
-        return value - 360f * (float)Math.floor((value + 180f) / 360f);
-    }
-
-    // Android quaternion array order from getQuaternionFromVector is [w,x,y,z].
-    // Relative orientation q_rel = conjugate(q_cal) * q_current.
-    static float[] relativeQuaternion(float[] a, float[] b) {
-        float aw=a[0], ax=a[1], ay=a[2], az=a[3];
-        float bw=b[0], bx=b[1], by=b[2], bz=b[3];
-        return new float[] {
-            aw*bw + ax*bx + ay*by + az*bz,
-            aw*bx - ax*bw - ay*bz + az*by,
-            aw*by + ax*bz - ay*bw - az*bx,
-            aw*bz - ax*by + ay*bx - az*bw
-        };
-    }
-
-    static float quaternionAngleBetween(float[] a, float[] b) {
-        if (a == null || b == null || a.length < 4 || b.length < 4) return 180f;
-        float dot = a[0]*b[0] + a[1]*b[1] + a[2]*b[2] + a[3]*b[3];
-        if (dot < 0f) dot = -dot;
-        dot = clamp(dot, -1f, 1f);
-        // atan2 form is better conditioned for very small angles than acos(dot).
-        float vx = a[0]*b[1] - a[1]*b[0] - a[2]*b[3] + a[3]*b[2];
-        float vy = a[0]*b[2] + a[1]*b[0] - a[2]*b[1] - a[3]*b[3];
-        float vz = a[0]*b[3] - a[1]*b[2] + a[2]*b[1] - a[3]*b[0];
-        float sinHalf = (float)Math.sqrt(vx*vx + vy*vy + vz*vz);
-        return (float)Math.toDegrees(2.0 * Math.atan2(sinHalf, dot));
     }
 
     @Override public void onAccuracyChanged(Sensor s, int a) {}
@@ -559,52 +278,11 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     void calibrate() {
-        // CALIBRATE defines a FIXED physical reference orientation. It is not a
-        // moving target and it is never replaced automatically while driving.
+        // Explicit calibration only: zero the current gyro wheel position.
+        // No automatic recalibration happens while driving.
         gyroAngle = 0f;
-        gyroRawAngle = 0f;
-        // Do not trust one instantaneous sample as the calibration bias.
-        // Capture a short stationary average in onSensorChanged().
         gyroBias = 0f;
-        calibrationBiasCapture = true;
-        calibrationBiasStartNs = 0L;
-        calibrationBiasSum = 0.0;
-        calibrationBiasSamples = 0;
-        lowRateSinceNs = 0;
-        stationarySinceNs = 0L;
-        stationaryHold = true;
         lastGyroNs = 0;
-        lastReferenceSampleNs = 0L;
-        lastReferenceMotionDeg = 0f;
-        lastReferenceTimestampNs = 0L;
-        referenceTwistDeg = 0f;
-        previousWrappedTwistDeg = 0f;
-        referenceTwistInitialized = false;
-        previousTwistTimestampNs = 0L;
-        referenceConfidence = 0f;
-        referenceInnovationDeg = 0f;
-        referenceCorrectionRateDeg = 0f;
-        referenceRateDeg = 0f;
-        hybridReferenceReady = false;
-
-        gyroCorrectionOffset = 0f;
-        targetCorrectionOffset = 0f;
-        correctionSettledSinceNs = 0;
-        referenceReturnCandidate = false;
-        lastMeaningfulRotationNs = 0;
-        referenceNearSinceNs = 0;
-
-        if (currentQuaternion != null) {
-            calibrationQuaternion = currentQuaternion.clone();
-            referenceCalibrationReady = true;
-            referenceTwistDeg = 0f;
-            referenceConfidence = 1f;
-            hybridReferenceReady = true;
-        } else {
-            calibrationQuaternion = null;
-            referenceCalibrationReady = false;
-            hybridReferenceReady = false;
-        }
 
         view.wheelAngleDeg = 0f;
         view.steer = 0f;
@@ -612,14 +290,6 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     static float clamp(float v, float a, float b) { return Math.max(a, Math.min(b, v)); }
-    // Normalize an angular delta to the shortest signed path. This helper is
-    // defined on MainActivity because the sensor callback runs outside
-    // ControllerView; ControllerView has its own equivalent helper for touch input.
-    static float normalizeDelta(float d) {
-        while (d > 180f) d -= 360f;
-        while (d < -180f) d += 360f;
-        return d;
-    }
 
     class ControllerView extends View {
         final Paint p = new Paint(3);
