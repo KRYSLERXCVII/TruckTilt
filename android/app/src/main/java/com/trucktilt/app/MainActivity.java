@@ -25,9 +25,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * TruckTilt v0.9 — branded Android controller build.
  * Android side of the Wi-Fi steering-wheel controller.
- *
- * The phone sends a normalized wheel/pedal state plus 32 independent buttons.
- * The Windows host exposes those inputs as a DirectInput-style virtual wheel.
  */
 public class MainActivity extends Activity implements SensorEventListener {
     static final int PORT = 45454;
@@ -223,19 +220,25 @@ public class MainActivity extends Activity implements SensorEventListener {
                     stationaryHold = false;
                 }
 
-                // 1. Pure gyro integration during turns (allows holding turns indefinitely)
+                // Integrate high-speed gyro angular motion
                 if (!stationaryHold) {
                     gyroRawAngle -= gyroRateDeg * dt;
                 }
 
-                // 2. Zero-point re-anchoring (eliminates accumulation drift across turns without affecting held turns)
+                // RE-ANCHORING LOGIC:
+                // When actively turning/holding, no correction is applied (pure gyro feel).
+                // As you rotate back towards center (< 15 degrees) or hold still, gently align 
+                // gyroRawAngle with absolute referenceTwistDeg to eliminate sharp-turn drift.
                 if (view != null && view.mode == 0 && referenceCalibrationReady &&
                         currentQuaternion != null && calibrationQuaternion != null && hybridReferenceReady) {
                     
-                    // Re-anchor absolute baseline ONLY when returned near center OR resting stationary
-                    if (Math.abs(referenceTwistDeg) < 8.0f || stationaryHold) {
-                        float diff = wrapDegrees(referenceTwistDeg - gyroRawAngle);
-                        gyroRawAngle += diff * 0.05f; // Gentle drift removal near center
+                    float absRef = Math.abs(referenceTwistDeg);
+                    if (absRef < 15.0f || stationaryHold) {
+                        float error = wrapDegrees(referenceTwistDeg - gyroRawAngle);
+                        
+                        // Higher pull rate near center (0-5 deg) to guarantee exact 0-degree lock upon return
+                        float pullFactor = absRef < 5.0f ? 0.15f : 0.05f;
+                        gyroRawAngle += error * pullFactor;
                     }
                 }
 
