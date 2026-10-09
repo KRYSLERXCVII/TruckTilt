@@ -32,7 +32,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class MainActivity extends Activity implements SensorEventListener {
     static final int PORT = 45454;
     static final int INPUT_INTERVAL_MS = 16;
-    // Change this to your exact Buy Me a Coffee page if your username differs.
     static final String DONATE_URL = "https://buymeacoffee.com/kryslerxcvii";
 
     ControllerView view;
@@ -42,7 +41,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     long lastGyroNs = 0L;
     float gyroRawAngle = 0f;
 
-    // Gyro-rate bias estimation is used when stationary to reduce Z-axis sensor drift.
+    // Gyro-rate bias estimation when resting still.
     float latestGyroZ = 0f;
     long lowRateSinceNs = 0;
     long lastReferenceSampleNs = 0L;
@@ -51,10 +50,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     // Fixed calibration reference for GYRO WHEEL.
     float[] calibrationQuaternion = null;
     float[] currentQuaternion = null;
-    long lastReferenceTimestampNs = 0L;
     float referenceTwistDeg = 0f;
-    float referenceConfidence = 1f;
-    float referenceRateDeg = 0f;
     boolean hybridReferenceReady = false;
     boolean referenceCalibrationReady = false;
 
@@ -72,9 +68,6 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     boolean stationaryHold = false;
     long stationarySinceNs = 0L;
-
-    // Complementary filter parameter: smooths absolute orientation vector reference onto gyro
-    static final float COMPLEMENTARY_ALPHA = 0.96f;
 
     UdpClient net;
     volatile int batteryPercent = -1;
@@ -179,16 +172,14 @@ public class MainActivity extends Activity implements SensorEventListener {
                                   e.values[2] * e.values[2]));
 
                 boolean referenceStill = true;
-                float referenceRate = 0f;
                 if (currentQuaternion != null && lastReferenceSampleNs != 0L &&
                         e.timestamp > lastReferenceSampleNs) {
-                    referenceRate = lastReferenceMotionDeg * 1_000_000_000f /
+                    float referenceRate = lastReferenceMotionDeg * 1_000_000_000f /
                             (e.timestamp - lastReferenceSampleNs);
                     referenceStill = referenceRate <= STATIONARY_REFERENCE_LIMIT_DEG_PER_SEC;
                 }
 
-                boolean phoneStill = rawRateMagnitudeDeg <= STATIONARY_RATE_LIMIT_DEG_PER_SEC
-                        && referenceStill;
+                boolean phoneStill = rawRateMagnitudeDeg <= STATIONARY_RATE_LIMIT_DEG_PER_SEC && referenceStill;
 
                 if (calibrationBiasCapture) {
                     if (calibrationBiasStartNs == 0L) calibrationBiasStartNs = e.timestamp;
@@ -223,8 +214,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                     }
 
                     if (stationarySinceNs == 0) stationarySinceNs = e.timestamp;
-                    if ((e.timestamp - stationarySinceNs) >=
-                            STATIONARY_HOLD_MS * 1_000_000L) {
+                    if ((e.timestamp - stationarySinceNs) >= STATIONARY_HOLD_MS * 1_000_000L) {
                         stationaryHold = true;
                     }
                 } else {
@@ -233,21 +223,23 @@ public class MainActivity extends Activity implements SensorEventListener {
                     stationaryHold = false;
                 }
 
-                // Smooth steering update using complementary fusion to prevent angle accumulation and turn offset
+                // 1. Pure gyro integration during turns (allows holding turns indefinitely)
                 if (!stationaryHold) {
                     gyroRawAngle -= gyroRateDeg * dt;
                 }
 
+                // 2. Zero-point re-anchoring (eliminates accumulation drift across turns without affecting held turns)
                 if (view != null && view.mode == 0 && referenceCalibrationReady &&
-                        currentQuaternion != null && calibrationQuaternion != null &&
-                        hybridReferenceReady) {
-                    // Fuse raw gyroscope integration with relative orientation reference.
-                    // Handles full continuous turns without drift or loss of 0-degree calibration.
-                    gyroAngle = COMPLEMENTARY_ALPHA * (gyroAngle - (stationaryHold ? 0f : gyroRateDeg * dt)) 
-                              + (1f - COMPLEMENTARY_ALPHA) * referenceTwistDeg;
-                } else {
-                    gyroAngle = gyroRawAngle;
+                        currentQuaternion != null && calibrationQuaternion != null && hybridReferenceReady) {
+                    
+                    // Re-anchor absolute baseline ONLY when returned near center OR resting stationary
+                    if (Math.abs(referenceTwistDeg) < 8.0f || stationaryHold) {
+                        float diff = wrapDegrees(referenceTwistDeg - gyroRawAngle);
+                        gyroRawAngle += diff * 0.05f; // Gentle drift removal near center
+                    }
                 }
+
+                gyroAngle = gyroRawAngle;
 
                 float half = view == null ? 450f : view.rangeDeg / 2f;
                 gyroAngle = clamp(gyroAngle, -half, half);
@@ -266,22 +258,18 @@ public class MainActivity extends Activity implements SensorEventListener {
                     e.timestamp > lastReferenceSampleNs) {
                 long refDtNs = e.timestamp - lastReferenceSampleNs;
                 lastReferenceMotionDeg = quaternionAngleBetween(currentQuaternion, q);
-                referenceRateDeg = lastReferenceMotionDeg * 1_000_000_000f / refDtNs;
             } else {
                 lastReferenceMotionDeg = 0f;
-                referenceRateDeg = 0f;
             }
             lastReferenceSampleNs = e.timestamp;
             currentQuaternion = q;
 
             if (view != null && view.mode == 0 && calibrationQuaternion != null &&
                     referenceCalibrationReady) {
-                // Compute relative twist around phone's Z steering axis relative to absolute calibrated vector.
                 float[] rel = relativeQuaternion(calibrationQuaternion, q);
                 float w = rel[0], z = rel[3];
                 if (w < 0f) { w = -w; z = -z; }
                 referenceTwistDeg = (float)Math.toDegrees(-2.0 * Math.atan2(z, w));
-
                 hybridReferenceReady = true;
             }
 
@@ -375,7 +363,6 @@ public class MainActivity extends Activity implements SensorEventListener {
                         break;
                 }
             } catch (Throwable ignored) {
-                // Haptics must never interrupt controller operation.
             }
         });
     }
@@ -433,7 +420,6 @@ public class MainActivity extends Activity implements SensorEventListener {
         try {
             startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(DONATE_URL)));
         } catch (Exception ignored) {
-            // No browser available; keep the controller running normally.
         }
     }
 
@@ -451,10 +437,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         lastGyroNs = 0;
         lastReferenceSampleNs = 0L;
         lastReferenceMotionDeg = 0f;
-        lastReferenceTimestampNs = 0L;
         referenceTwistDeg = 0f;
-        referenceConfidence = 1f;
-        referenceRateDeg = 0f;
         hybridReferenceReady = false;
 
         if (currentQuaternion != null) {
@@ -514,7 +497,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         boolean cameraClickPending=false;
         boolean wheelReturning = false;
         int wheelPointerId = -1;
-        int mode = 2; // 0 gyro wheel, 1 gyro tilt, 2 virtual wheel
+        int mode = 2;
         int rangeDeg = 900;
         final int[] ranges = {360, 540, 720, 900, 1080};
         final String[] buttonNames = {
@@ -551,7 +534,6 @@ public class MainActivity extends Activity implements SensorEventListener {
 
             float controlH = Math.max(44f, Math.min(58f, h * 0.050f));
             float smallControlH = Math.max(42f, Math.min(54f, h * 0.046f));
-            float controlText = Math.max(10f, Math.min(15f, controlH * 0.24f));
 
             p.setStyle(Paint.Style.FILL); p.setColor(Color.rgb(18,22,26));
             c.drawRect(0,0,w,58,p);
@@ -659,8 +641,8 @@ public class MainActivity extends Activity implements SensorEventListener {
             drawMappedButton(c,18,px1,h*.59f,pw*.88f,controlH); // GEAR UP
             drawMappedButton(c,10,px2,h*.59f,pw*.88f,controlH); // ENGINE BRAKE
             drawMappedButton(c,19,px1,h*.68f,pw*.88f,controlH); // GEAR DOWN
-            drawMappedButton(c,11,px2,h*.68f,pw*.88f,controlH); // RETARDER+
-            drawMappedButton(c,12,px2,h*.77f,pw*.88f,controlH); // RETARDER-
+            drawMappedButton(c,11,px2,h*.77f,pw*.88f,controlH); // RETARDER+
+            drawMappedButton(c,12,px2,h*.86f,pw*.88f,controlH); // RETARDER-
 
             drawPedal(c,"CLUTCH",px1,h*.84f,pw*.88f,62,clutch);
             drawPedal(c,"RETARDER",px2,h*.84f,pw*.88f,62,retarder);
