@@ -23,7 +23,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * TruckTilt v0.9 — ultra-stable physical zero baseline anchor.
+ * TruckTilt v0.9 — ultra-clean non-snapping dynamic drift recovery.
  */
 public class MainActivity extends Activity implements SensorEventListener {
     static final int PORT = 45454;
@@ -37,7 +37,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     float gyroAngle = 0f, tiltAngle = 0f;
     long lastGyroNs = 0L;
 
-    // Physical Baseline & Gravity Deadband Tracking
+    // Physical Baseline & Precise Baseline Tracking
     float[] calibrationGravity = new float[3];
     float[] currentGravity = new float[3];
     boolean isCalibrated = false;
@@ -134,7 +134,6 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     @Override public void onSensorChanged(SensorEvent e) {
         if (e.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
-            // Low-pass filter accelerometer to avoid high frequency vibration jitter
             currentGravity[0] = currentGravity[0] * 0.85f + e.values[0] * 0.15f;
             currentGravity[1] = currentGravity[1] * 0.85f + e.values[1] * 0.15f;
             currentGravity[2] = currentGravity[2] * 0.85f + e.values[2] * 0.15f;
@@ -179,8 +178,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                                                      currentGravity[1]*currentGravity[1] + 
                                                      currentGravity[2]*currentGravity[2]);
 
-                    // Verify valid gravity vector strength (0.85g to 1.15g) to reject dynamic movement noise
-                    if (normCalib > 0 && normCurr > 8.3f && normCurr < 11.3f) {
+                    if (normCalib > 0 && normCurr > 8.5f && normCurr < 11.0f) {
                         float dot = (calibrationGravity[0]*currentGravity[0] + 
                                      calibrationGravity[1]*currentGravity[1] + 
                                      calibrationGravity[2]*currentGravity[2]);
@@ -188,14 +186,19 @@ public class MainActivity extends Activity implements SensorEventListener {
                         float cosTheta = clamp(dot / (normCalib * normCurr), -1f, 1f);
                         float devAngle = (float)Math.toDegrees(Math.acos(cosTheta));
 
-                        // Symmetrical resting alignment: Restores absolute 0° only when holding near baseline posture
-                        if (devAngle < 8.0f && turnSpeedDegPerSec < 1.2f) {
-                            // Continuously refine gyroscope stationary bias drift
+                        // FIX 1: Strict Micro-Zone (< 3.0°) & Ultra-Low Motion Threshold (< 0.4°/s)
+                        // Protects all intentional micro-turns and highway adjustments from snapping.
+                        if (devAngle < 3.0f && turnSpeedDegPerSec < 0.4f) {
                             gyroBiasZ += (e.values[2] - gyroBiasZ) * (0.005f * dt * 60f);
 
-                            // Smoothly lock center reference back to exact zero baseline
                             float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
-                            zeroCorrectionOffset += currentError * (0.18f * dt * 60f);
+                            
+                            // FIX 2: Dynamic Proportional Reset Speed
+                            // Small drift = subtle invisible bleed; Large multi-turn drift = rapid clean recovery
+                            float absErr = Math.abs(currentError);
+                            float adaptRate = (absErr > 15f) ? 0.45f : (absErr > 5f) ? 0.25f : 0.08f;
+
+                            zeroCorrectionOffset += currentError * (adaptRate * dt * 60f);
                         }
                     }
                 }
@@ -320,7 +323,6 @@ public class MainActivity extends Activity implements SensorEventListener {
         zeroCorrectionOffset = 0f;
         gyroBiasZ = 0f;
 
-        // Initiate multi-sample gravity averaging for precise center pose tracking
         calibrationGravity[0] = 0f;
         calibrationGravity[1] = 0f;
         calibrationGravity[2] = 0f;
