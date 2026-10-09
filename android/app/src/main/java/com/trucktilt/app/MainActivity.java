@@ -23,7 +23,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * TruckTilt v0.9 — adaptive instant-settling baseline build.
+ * TruckTilt v0.9 — symmetrical balanced baseline build.
  */
 public class MainActivity extends Activity implements SensorEventListener {
     static final int PORT = 45454;
@@ -37,11 +37,12 @@ public class MainActivity extends Activity implements SensorEventListener {
     float gyroAngle = 0f, tiltAngle = 0f;
     long lastGyroNs = 0L;
 
-    // Physical Baseline & Gravity Deadband Tracking
+    // Physical Baseline & Dynamic Bias Tracking
     float[] calibrationGravity = null;
     float[] currentGravity = null;
     float rawGyroIntegratedDeg = 0f;
     float zeroCorrectionOffset = 0f;
+    float gyroBiasZ = 0f;
 
     UdpClient net;
     volatile int batteryPercent = -1;
@@ -144,14 +145,14 @@ public class MainActivity extends Activity implements SensorEventListener {
             lastGyroNs = e.timestamp;
 
             if (dt > 0 && dt < 0.2f) {
-                float rawZRateRad = e.values[2];
+                float rawZRateRad = e.values[2] - gyroBiasZ;
                 float rateDeg = (float)Math.toDegrees(rawZRateRad);
                 rawGyroIntegratedDeg -= rateDeg * dt;
 
                 float turnSpeedDegPerSec = Math.abs(rateDeg);
-                float motionFactor = Math.max(0f, 1.0f - (turnSpeedDegPerSec / 3.0f));
 
-                if (calibrationGravity != null && currentGravity != null && motionFactor > 0.01f) {
+                // Check Symmetrical Alignment against Physical Baseline
+                if (calibrationGravity != null && currentGravity != null) {
                     float dot = (calibrationGravity[0]*currentGravity[0] + 
                                  calibrationGravity[1]*currentGravity[1] + 
                                  calibrationGravity[2]*currentGravity[2]);
@@ -166,15 +167,18 @@ public class MainActivity extends Activity implements SensorEventListener {
 
                     if (normCalib > 0 && normCurr > 0) {
                         float cosTheta = clamp(dot / (normCalib * normCurr), -1f, 1f);
-                        
-                        // Tight deadband power curve
-                        float proximityWeight = (float)Math.pow(Math.max(0f, cosTheta), 32.0);
+                        float devAngle = (float)Math.toDegrees(Math.acos(cosTheta));
 
-                        // Dynamic settling rate: Fast convergence when stationary/near rest (0.15f), smooth when moving
-                        float settlingRate = (turnSpeedDegPerSec < 1.0f) ? 0.15f : 0.03f;
+                        // Symmetrical Rest Lock: Only apply correction near physical resting position (< 6°)
+                        // when motion is low (< 0.8°/s) to prevent lopsided bias during turns
+                        if (devAngle < 6.0f && turnSpeedDegPerSec < 0.8f) {
+                            // Update micro gyro bias to eliminate long-term rate drift
+                            gyroBiasZ += (e.values[2] - gyroBiasZ) * (0.01f * dt * 60f);
 
-                        float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
-                        zeroCorrectionOffset += currentError * (proximityWeight * motionFactor * settlingRate * (dt * 60f));
+                            // Smoothly settle remaining error to exact 0° physical center
+                            float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
+                            zeroCorrectionOffset += currentError * (0.25f * dt * 60f);
+                        }
                     }
                 }
 
@@ -296,6 +300,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         gyroAngle = 0f;
         rawGyroIntegratedDeg = 0f;
         zeroCorrectionOffset = 0f;
+        gyroBiasZ = 0f;
 
         if (currentGravity != null) {
             calibrationGravity = currentGravity.clone();
