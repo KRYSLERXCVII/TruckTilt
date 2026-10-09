@@ -23,7 +23,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * TruckTilt v0.9 — ultra-clean non-snapping dynamic drift recovery.
+ * TruckTilt v0.9.5 — continuous linear S-curve drift decay (zero snap).
  */
 public class MainActivity extends Activity implements SensorEventListener {
     static final int PORT = 45454;
@@ -37,7 +37,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     float gyroAngle = 0f, tiltAngle = 0f;
     long lastGyroNs = 0L;
 
-    // Physical Baseline & Precise Baseline Tracking
+    // Physical Baseline & Precise Tracking
     float[] calibrationGravity = new float[3];
     float[] currentGravity = new float[3];
     boolean isCalibrated = false;
@@ -186,19 +186,22 @@ public class MainActivity extends Activity implements SensorEventListener {
                         float cosTheta = clamp(dot / (normCalib * normCurr), -1f, 1f);
                         float devAngle = (float)Math.toDegrees(Math.acos(cosTheta));
 
-                        // FIX 1: Strict Micro-Zone (< 3.0°) & Ultra-Low Motion Threshold (< 0.4°/s)
-                        // Protects all intentional micro-turns and highway adjustments from snapping.
-                        if (devAngle < 3.0f && turnSpeedDegPerSec < 0.4f) {
-                            gyroBiasZ += (e.values[2] - gyroBiasZ) * (0.005f * dt * 60f);
+                        // Continuous Asymptotic Drift Bleed System
+                        if (devAngle < 5.0f) {
+                            // Update gyro stationary bias
+                            if (turnSpeedDegPerSec < 0.3f) {
+                                gyroBiasZ += (e.values[2] - gyroBiasZ) * (0.005f * dt * 60f);
+                            }
 
                             float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
                             
-                            // FIX 2: Dynamic Proportional Reset Speed
-                            // Small drift = subtle invisible bleed; Large multi-turn drift = rapid clean recovery
-                            float absErr = Math.abs(currentError);
-                            float adaptRate = (absErr > 15f) ? 0.45f : (absErr > 5f) ? 0.25f : 0.08f;
+                            // Smooth velocity scaling: Capped to 0.06f MAX so large errors bleed continuously without snapping
+                            float speedFactor = Math.max(0f, 1.0f - (turnSpeedDegPerSec / 1.5f));
+                            float proxFactor = Math.max(0f, 1.0f - (devAngle / 5.0f));
+                            
+                            float bleedRate = 0.06f * speedFactor * proxFactor;
 
-                            zeroCorrectionOffset += currentError * (adaptRate * dt * 60f);
+                            zeroCorrectionOffset += currentError * (bleedRate * dt * 60f);
                         }
                     }
                 }
