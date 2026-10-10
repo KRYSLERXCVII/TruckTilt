@@ -67,6 +67,9 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
     };
     volatile boolean hapticsEnabled;
+    volatile int telemetryGear = Integer.MIN_VALUE;
+    volatile float telemetryRpm = 0f, telemetryRpmMax = 0f, telemetrySpeedKmh = 0f;
+    volatile int telemetryGearCount = 0;
     Vibrator vibrator;
     boolean offRoadRumbleActive = false;
     int adaptiveRumbleIntensity = -1;
@@ -279,6 +282,19 @@ public class MainActivity extends Activity implements SensorEventListener {
                 .edit().putBoolean("haptics_enabled", enabled).apply();
         if (!enabled) stopOffRoadRumble();
         if (view != null) view.invalidate();
+    }
+
+    void handleTelemetryHud(String message) {
+        try {
+            String[] p = message.trim().split("\\|");
+            if (p.length < 5) return;
+            telemetryGear = Integer.parseInt(p[1]);
+            telemetryRpm = Float.parseFloat(p[2]);
+            telemetryRpmMax = Float.parseFloat(p[3]);
+            telemetryGearCount = Integer.parseInt(p[4]);
+            if (p.length >= 6) telemetrySpeedKmh = Math.max(0f, Float.parseFloat(p[5]));
+            if (view != null) view.postInvalidate();
+        } catch (Exception ignored) { }
     }
 
     void handleHapticMessage(String message) {
@@ -497,6 +513,58 @@ public class MainActivity extends Activity implements SensorEventListener {
                     w-168,22,11,net.connected?Color.rgb(139,195,74):Color.rgb(255,180,50),Paint.Align.RIGHT);
             String status=net.connected ? net.rttMs+" ms  •  "+net.rate+" Hz  •  TX "+net.txCount : "Wi-Fi only • auto discovery";
             text(c,status,w-168,42,10,Color.LTGRAY,Paint.Align.RIGHT);
+
+            // Live telemetry corner readouts: speed bottom-left and RPM bottom-right.
+            if (telemetryGear != Integer.MIN_VALUE) {
+                float hudBottom = h - 18f;
+                p.setStyle(Paint.Style.FILL);
+                p.setColor(Color.argb(220, 18, 23, 28));
+                c.drawRoundRect(new RectF(18f, h - 76f, 154f, h - 12f), 10f, 10f, p);
+                c.drawRoundRect(new RectF(w - 154f, h - 76f, w - 18f, h - 12f), 10f, 10f, p);
+                text(c, String.format(Locale.US, "%.0f", telemetrySpeedKmh), 86f, h - 40f,
+                        24f, Color.WHITE, Paint.Align.CENTER);
+                text(c, "KM/H", 86f, hudBottom - 1f, 10f, Color.rgb(170, 180, 188), Paint.Align.CENTER);
+                text(c, String.format(Locale.US, "%.0f", telemetryRpm), w - 86f, h - 40f,
+                        21f, Color.WHITE, Paint.Align.CENTER);
+                text(c, "RPM", w - 86f, hudBottom - 1f, 10f, Color.rgb(170, 180, 188), Paint.Align.CENTER);
+                float rpmRatio = telemetryRpmMax > 100f
+                        ? clamp(telemetryRpm / telemetryRpmMax, 0f, 1f) : 0f;
+                p.setColor(Color.rgb(40, 46, 50));
+                c.drawRoundRect(new RectF(w - 140f, h - 24f, w - 32f, h - 19f), 3f, 3f, p);
+                p.setColor(rpmRatio >= 0.86f ? Color.rgb(255, 190, 55)
+                        : rpmRatio >= 0.70f ? Color.rgb(100, 190, 255) : Color.rgb(139, 195, 74));
+                c.drawRoundRect(new RectF(w - 140f, h - 24f,
+                        w - 140f + 108f * rpmRatio, h - 19f), 3f, 3f, p);
+            }
+
+            // Racing-style telemetry shift prompt in the top-center header area.
+            if (telemetryGear != Integer.MIN_VALUE) {
+                boolean shiftUp = telemetryRpmMax > 100f && telemetryGear > 0
+                        && telemetryGearCount > 0 && telemetryGear < telemetryGearCount
+                        && telemetryRpm / telemetryRpmMax >= 0.86f;
+                boolean shiftDown = telemetryRpmMax > 100f && telemetryGear > 1
+                        && telemetryRpm / telemetryRpmMax <= 0.22f;
+                String gearLabel = telemetryGear < 0 ? "R" : telemetryGear == 0 ? "N" : String.valueOf(telemetryGear);
+                int gearColor = shiftUp ? Color.rgb(255,190,55)
+                        : shiftDown ? Color.rgb(100,190,255) : Color.WHITE;
+                text(c, "GEAR " + gearLabel, w * 0.50f, 18, 11, gearColor, Paint.Align.CENTER);
+                if (shiftUp || shiftDown) {
+                    String prompt = shiftUp ? "▲ SHIFT UP!" : "▼ SHIFT DOWN!";
+                    int promptColor = shiftUp ? Color.rgb(255,190,55) : Color.rgb(100,190,255);
+                    p.setStyle(Paint.Style.FILL);
+                    p.setColor(Color.rgb(24,29,34));
+                    c.drawRoundRect(new RectF(w*0.50f-55,25,w*0.50f+55,49),7,7,p);
+                    text(c, prompt, w * 0.50f, 41, 12, promptColor, Paint.Align.CENTER);
+                } else {
+                    float ratio = telemetryRpmMax > 100f
+                            ? clamp(telemetryRpm / telemetryRpmMax, 0f, 1f) : 0f;
+                    p.setStyle(Paint.Style.FILL);
+                    p.setColor(Color.rgb(40,46,50));
+                    c.drawRoundRect(new RectF(w*0.50f-48,25,w*0.50f+48,30),3,3,p);
+                    p.setColor(ratio >= 0.86f ? Color.rgb(255,190,55) : Color.rgb(139,195,74));
+                    c.drawRoundRect(new RectF(w*0.50f-48,25,w*0.50f-48+96*ratio,30),3,3,p);
+                }
+            }
 
             float leftWidth=w*.34f;
             float centerLeft=w*.36f, centerRight=w*.72f;
@@ -1131,7 +1199,9 @@ public class MainActivity extends Activity implements SensorEventListener {
                         host=p.getAddress(); hostPort=p.getPort(); connected=true;
                         sendRaw("CONNECT|"+android.os.Build.MODEL,host,hostPort);
                     } else if(s.startsWith("WELCOME|")) connected=true;
-                    else if(s.startsWith("HAPTIC|")){
+                    else if(s.startsWith("HUD|")){
+                        handleTelemetryHud(s);
+                    } else if(s.startsWith("HAPTIC|")){
                         String payload = s.substring(7).trim();
                         if(!payload.isEmpty()) handleHapticMessage(payload);
                     } else if(s.startsWith("PONG|")){

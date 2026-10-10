@@ -78,3 +78,12 @@ Windows may send optional haptic commands to the connected Android phone:
 - `HAPTIC|RUMBLE_STOP` — stop the off-road rumble.
 
 The Android app has a single Haptics ON/OFF setting. When OFF, all incoming haptic commands are ignored and any active rumble is cancelled.
+
+
+## Telemetry HUD (Windows host to phone)
+
+When the SCS telemetry shared-memory map is active, the Windows host sends:
+
+`HUD|gear|engineRpm|engineRpmMax|forwardGearCount`
+
+The Android app uses this packet to show the current gear and an RPM-based shift prompt. `gear < 0` is reverse, `gear = 0` is neutral, and positive values are forward gears. The shift-up prompt appears at 86% of the engine RPM limit when another forward gear is available; a shift-down prompt appears below 22% RPM in gears above first. These are visual prompts only and do not change game gears automatically.

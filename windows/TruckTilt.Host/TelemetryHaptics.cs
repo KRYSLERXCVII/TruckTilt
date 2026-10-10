@@ -18,6 +18,7 @@ internal sealed class TelemetryHaptics : IDisposable
     private const int GearOffset = 500;             // truck_i.gear
     private const int EngineRpmMaxOffset = 740;     // config_f.engineRpmMax
     private const int EngineRpmOffset = 948;        // truck_f.engineRpm
+    private const int SpeedOffset = 900;             // truck_f.speed (m/s, Rev. 12)
     private const int WheelSubstanceOffset = 96;    // truck_ui.truck_wheelSubstance[0]
     private const int PoweredWheelsOffset = 1516;   // config_b.truckWheelPowered[0]
     private const int EngineEnabledOffset = 1576;   // truck_b.engineEnabled
@@ -126,6 +127,10 @@ internal sealed class TelemetryHaptics : IDisposable
         int gears = (int)Math.Min(64u, ReadUInt32(GearsOffset));
         float rpm = ReadFloat(EngineRpmOffset);
         float rpmMax = ReadFloat(EngineRpmMaxOffset);
+        float speedMps = ReadFloat(SpeedOffset);
+        float speedKmh = float.IsFinite(speedMps) ? Math.Max(0f, speedMps * 3.6f) : 0f;
+        // HUD packet: gear, RPM, RPM limit, forward gear count, speed in km/h.
+        _sendHaptic($"HUD|{gear}|{Math.Max(0f, rpm):0}|{Math.Max(0f, rpmMax):0}|{gears}|{speedKmh:0.0}");
         bool engineEnabled = ReadByte(EngineEnabledOffset) != 0;
 
         // Engine start/stop: initialize silently so connecting to a running
