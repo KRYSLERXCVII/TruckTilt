@@ -32,7 +32,7 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     ControllerView view;
     SensorManager sensors;
-    Sensor gyro, accel;
+    Sensor gyro, accel, rotationVector;
 
     float gyroAngle = 0f, tiltAngle = 0f;
     long lastGyroNs = 0L;
@@ -40,6 +40,12 @@ public class MainActivity extends Activity implements SensorEventListener {
     // Gyro steering: integrate angular rate without gravity-based recentering.
     float[] calibrationGravity = null;
     float[] currentGravity = null;
+    float currentYawDeg = 0f;
+    float calibrationYawDeg = 0f;
+    boolean rotationReferenceValid = false;
+    boolean rotationVectorSeen = false;
+    final float[] rotationMatrix = new float[9];
+    final float[] orientationAngles = new float[3];
     float rawGyroIntegratedDeg = 0f;
     float gyroBiasDegPerSec = 0f;
     float filteredGyroRateDegPerSec = 0f;
@@ -91,6 +97,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         sensors = (SensorManager)getSystemService(SENSOR_SERVICE);
         gyro = sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
         accel = sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+        rotationVector = sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
 
         view = new ControllerView(this);
         net = new UdpClient();
@@ -118,6 +125,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         super.onResume();
         if (gyro != null) sensors.registerListener(this, gyro, SensorManager.SENSOR_DELAY_GAME);
         if (accel != null) sensors.registerListener(this, accel, SensorManager.SENSOR_DELAY_GAME);
+        if (rotationVector != null) sensors.registerListener(this, rotationVector, SensorManager.SENSOR_DELAY_GAME);
     }
 
     @Override protected void onPause() {
@@ -136,7 +144,13 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     @Override public void onSensorChanged(SensorEvent e) {
-        if (e.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
+        if (e.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR) {
+            SensorManager.getRotationMatrixFromVector(rotationMatrix, e.values);
+            SensorManager.getOrientation(rotationMatrix, orientationAngles);
+            currentYawDeg = (float)Math.toDegrees(orientationAngles[0]);
+            rotationVectorSeen = true;
+        }
+        else if (e.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
             currentGravity = e.values.clone();
             
             float norm = (float)Math.sqrt(e.values[0]*e.values[0] + e.values[1]*e.values[1] + e.values[2]*e.values[2]);
@@ -194,6 +208,20 @@ public class MainActivity extends Activity implements SensorEventListener {
                 }
 
                 rawGyroIntegratedDeg += filteredGyroRateDegPerSec * dt;
+
+                // Fuse the wrapped orientation reference at a very low gain.
+                // The correction compares angles modulo 360 degrees, so it can
+                // correct slow drift without resetting accumulated full turns.
+                // Keep this correction gentle and only apply it at low motion.
+                if (rotationReferenceValid && Math.abs(correctedRate) < 12.0f) {
+                    float referenceRelativeDeg = normalizeDelta(currentYawDeg - calibrationYawDeg);
+                    // Match the sign convention used by measuredRateDegPerSec.
+                    referenceRelativeDeg = -referenceRelativeDeg;
+                    float integratedWrappedDeg = normalizeDelta(rawGyroIntegratedDeg);
+                    float referenceErrorDeg = normalizeDelta(referenceRelativeDeg - integratedWrappedDeg);
+                    float fusionAlpha = Math.min(0.02f, dt * 0.025f);
+                    rawGyroIntegratedDeg += referenceErrorDeg * fusionAlpha;
+                }
 
                 // Smoothly fade the calibration offset over 250 ms. This preserves
                 // continuity at the button press while making the new neutral zero.
@@ -337,6 +365,14 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         if (currentGravity != null) {
             calibrationGravity = currentGravity.clone();
+        }
+        if (rotationVectorSeen) {
+            // The latest rotation-vector yaw becomes the fixed reference for this
+            // calibration. Full-turn count remains in rawGyroIntegratedDeg.
+            calibrationYawDeg = currentYawDeg;
+            rotationReferenceValid = true;
+        } else {
+            rotationReferenceValid = false;
         }
 
         if (view != null) {
