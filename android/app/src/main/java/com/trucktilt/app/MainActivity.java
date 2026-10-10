@@ -32,7 +32,7 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     ControllerView view;
     SensorManager sensors;
-    Sensor gyro, accel, rotationVector;
+    Sensor gyro, accel;
 
     float gyroAngle = 0f, tiltAngle = 0f;
     long lastGyroNs = 0L;
@@ -40,12 +40,6 @@ public class MainActivity extends Activity implements SensorEventListener {
     // Gyro steering: integrate angular rate without gravity-based recentering.
     float[] calibrationGravity = null;
     float[] currentGravity = null;
-    float currentYawDeg = 0f;
-    float calibrationYawDeg = 0f;
-    boolean rotationReferenceValid = false;
-    boolean rotationVectorSeen = false;
-    final float[] rotationMatrix = new float[9];
-    final float[] orientationAngles = new float[3];
     float rawGyroIntegratedDeg = 0f;
     float gyroBiasDegPerSec = 0f;
     float filteredGyroRateDegPerSec = 0f;
@@ -55,6 +49,17 @@ public class MainActivity extends Activity implements SensorEventListener {
     float calibrationFadeOffsetDeg = 0f;
     long calibrationFadeStartNs = 0L;
     static final long CALIBRATION_FADE_NS = 250_000_000L;
+
+    // Fixed-reference "lane keeping": use gravity's direction in the phone's
+    // screen plane to correct only modulo-360 gyro drift while truly stationary.
+    // This never changes calibrationGravity and never removes accumulated full turns.
+    long referenceStillSinceNs = 0L;
+    static final long REFERENCE_SETTLE_NS = 350_000_000L;
+    static final float REFERENCE_MIN_XY_G = 4.5f;
+    static final float REFERENCE_MAX_Z_DIFFERENCE = 2.0f;
+    static final float REFERENCE_MAX_ERROR_DEG = 45.0f;
+    static final float REFERENCE_CORRECTION_DEG_PER_SEC = 12.0f;
+    static final float REFERENCE_CORRECTION_TIME_SEC = 0.45f;
 
     UdpClient net;
     volatile int batteryPercent = -1;
@@ -97,7 +102,6 @@ public class MainActivity extends Activity implements SensorEventListener {
         sensors = (SensorManager)getSystemService(SENSOR_SERVICE);
         gyro = sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
         accel = sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
-        rotationVector = sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
 
         view = new ControllerView(this);
         net = new UdpClient();
@@ -125,7 +129,6 @@ public class MainActivity extends Activity implements SensorEventListener {
         super.onResume();
         if (gyro != null) sensors.registerListener(this, gyro, SensorManager.SENSOR_DELAY_GAME);
         if (accel != null) sensors.registerListener(this, accel, SensorManager.SENSOR_DELAY_GAME);
-        if (rotationVector != null) sensors.registerListener(this, rotationVector, SensorManager.SENSOR_DELAY_GAME);
     }
 
     @Override protected void onPause() {
@@ -144,13 +147,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     @Override public void onSensorChanged(SensorEvent e) {
-        if (e.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR) {
-            SensorManager.getRotationMatrixFromVector(rotationMatrix, e.values);
-            SensorManager.getOrientation(rotationMatrix, orientationAngles);
-            currentYawDeg = (float)Math.toDegrees(orientationAngles[0]);
-            rotationVectorSeen = true;
-        }
-        else if (e.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
+        if (e.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
             currentGravity = e.values.clone();
             
             float norm = (float)Math.sqrt(e.values[0]*e.values[0] + e.values[1]*e.values[1] + e.values[2]*e.values[2]);
@@ -209,18 +206,58 @@ public class MainActivity extends Activity implements SensorEventListener {
 
                 rawGyroIntegratedDeg += filteredGyroRateDegPerSec * dt;
 
-                // Fuse the wrapped orientation reference at a very low gain.
-                // The correction compares angles modulo 360 degrees, so it can
-                // correct slow drift without resetting accumulated full turns.
-                // Keep this correction gentle and only apply it at low motion.
-                if (rotationReferenceValid && Math.abs(correctedRate) < 12.0f) {
-                    float referenceRelativeDeg = normalizeDelta(currentYawDeg - calibrationYawDeg);
-                    // Match the sign convention used by measuredRateDegPerSec.
-                    referenceRelativeDeg = -referenceRelativeDeg;
-                    float integratedWrappedDeg = normalizeDelta(rawGyroIntegratedDeg);
-                    float referenceErrorDeg = normalizeDelta(referenceRelativeDeg - integratedWrappedDeg);
-                    float fusionAlpha = Math.min(0.02f, dt * 0.025f);
-                    rawGyroIntegratedDeg += referenceErrorDeg * fusionAlpha;
+                // Keep the integrated angle in a fixed calibrated reference lane.
+                // Gravity provides a modulo-360 orientation cue around the phone's
+                // Z axis when gravity has a strong projection into the screen plane.
+                // Only apply it after the phone has settled; never alter the saved
+                // calibration reference and never change the accumulated turn count.
+                boolean referenceUsable = calibrationGravity != null
+                        && currentGravity != null
+                        && accelNorm >= 8.0f && accelNorm <= 11.5f;
+
+                if (referenceUsable) {
+                    float baseXY = (float)Math.sqrt(
+                            calibrationGravity[0] * calibrationGravity[0] +
+                            calibrationGravity[1] * calibrationGravity[1]);
+                    float currentXY = (float)Math.sqrt(
+                            currentGravity[0] * currentGravity[0] +
+                            currentGravity[1] * currentGravity[1]);
+
+                    referenceUsable = baseXY >= REFERENCE_MIN_XY_G
+                            && currentXY >= REFERENCE_MIN_XY_G
+                            && Math.abs(currentGravity[2] - calibrationGravity[2])
+                                    <= REFERENCE_MAX_Z_DIFFERENCE;
+                }
+
+                if (referenceUsable && nearlyStill) {
+                    if (referenceStillSinceNs == 0L) referenceStillSinceNs = e.timestamp;
+
+                    if (e.timestamp - referenceStillSinceNs >= REFERENCE_SETTLE_NS) {
+                        float baseGravityAngle = (float)Math.toDegrees(
+                                Math.atan2(calibrationGravity[1], calibrationGravity[0]));
+                        float currentGravityAngle = (float)Math.toDegrees(
+                                Math.atan2(currentGravity[1], currentGravity[0]));
+
+                        float referenceAngle = normalizeDelta(
+                                currentGravityAngle - baseGravityAngle);
+                        float integratedModulo = normalizeDelta(rawGyroIntegratedDeg);
+                        float referenceError = normalizeDelta(referenceAngle - integratedModulo);
+
+                        // Large mismatches are more likely to be a change in phone
+                        // tilt or an unreliable gravity projection than small gyro
+                        // drift. Ignore them rather than pulling the wheel suddenly.
+                        if (Math.abs(referenceError) <= REFERENCE_MAX_ERROR_DEG) {
+                            float requestedCorrection =
+                                    referenceError * dt / REFERENCE_CORRECTION_TIME_SEC;
+                            float maxCorrection =
+                                    REFERENCE_CORRECTION_DEG_PER_SEC * dt;
+                            float correction = clamp(
+                                    requestedCorrection, -maxCorrection, maxCorrection);
+                            rawGyroIntegratedDeg += correction;
+                        }
+                    }
+                } else {
+                    referenceStillSinceNs = 0L;
                 }
 
                 // Smoothly fade the calibration offset over 250 ms. This preserves
@@ -362,17 +399,10 @@ public class MainActivity extends Activity implements SensorEventListener {
         gyroRateFilterInitialized = false;
         lastGyroNs = 0L;
         stationarySinceNs = 0L;
+        referenceStillSinceNs = 0L;
 
         if (currentGravity != null) {
             calibrationGravity = currentGravity.clone();
-        }
-        if (rotationVectorSeen) {
-            // The latest rotation-vector yaw becomes the fixed reference for this
-            // calibration. Full-turn count remains in rawGyroIntegratedDeg.
-            calibrationYawDeg = currentYawDeg;
-            rotationReferenceValid = true;
-        } else {
-            rotationReferenceValid = false;
         }
 
         if (view != null) {
