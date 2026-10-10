@@ -222,12 +222,23 @@ public class MainActivity extends Activity implements SensorEventListener {
 
                         if (normCalib > 0f && normCurr > 0f) {
                             float cosTheta = clamp(dot / (normCalib * normCurr), -1f, 1f);
-                            // A tight proximity curve avoids pulling the wheel
-                            // toward zero while the phone is meaningfully turned.
-                            float proximityWeight =
-                                    (float)Math.pow(Math.max(0f, cosTheta), 32.0);
+                            // Only correct when the phone is genuinely back at the
+                            // calibrated physical orientation. The old cos^32 curve
+                            // was still strong at 3-5 degrees and pulled intentional
+                            // small steering inputs back toward zero.
+                            float referenceDeviationDeg =
+                                    (float)Math.toDegrees(Math.acos(cosTheta));
+                            final float REFERENCE_DEADBAND_DEG = 1.5f;
+                            float proximityWeight = 0f;
+                            if (referenceDeviationDeg < REFERENCE_DEADBAND_DEG) {
+                                float closeness = 1f -
+                                        referenceDeviationDeg / REFERENCE_DEADBAND_DEG;
+                                proximityWeight = closeness * closeness;
+                            }
 
-                            float settlingRate = turnSpeedDegPerSec < 1f ? 0.15f : 0.03f;
+                            // Correct promptly once near the reference and nearly
+                            // stopped, but do not counter-steer while the phone moves.
+                            float settlingRate = turnSpeedDegPerSec < 1f ? 0.22f : 0.03f;
                             float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
                             zeroCorrectionOffset += currentError *
                                     proximityWeight * motionFactor * settlingRate * (dt * 60f);
