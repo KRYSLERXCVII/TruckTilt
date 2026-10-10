@@ -37,11 +37,18 @@ public class MainActivity extends Activity implements SensorEventListener {
     float gyroAngle = 0f, tiltAngle = 0f;
     long lastGyroNs = 0L;
 
-    // Physical Baseline & Gravity Deadband Tracking
+    // Gyro steering: integrate angular rate without gravity-based recentering.
     float[] calibrationGravity = null;
     float[] currentGravity = null;
     float rawGyroIntegratedDeg = 0f;
-    float zeroCorrectionOffset = 0f;
+    float gyroBiasDegPerSec = 0f;
+    float filteredGyroRateDegPerSec = 0f;
+    boolean gyroRateFilterInitialized = false;
+    long stationarySinceNs = 0L;
+    // A short output-offset fade makes recalibration smooth instead of snapping.
+    float calibrationFadeOffsetDeg = 0f;
+    long calibrationFadeStartNs = 0L;
+    static final long CALIBRATION_FADE_NS = 250_000_000L;
 
     UdpClient net;
     volatile int batteryPercent = -1;
@@ -139,48 +146,73 @@ public class MainActivity extends Activity implements SensorEventListener {
             }
         } 
         else if (e.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
-            if (lastGyroNs == 0) lastGyroNs = e.timestamp;
+            if (lastGyroNs == 0L) {
+                lastGyroNs = e.timestamp;
+                return;
+            }
             float dt = (e.timestamp - lastGyroNs) / 1_000_000_000f;
             lastGyroNs = e.timestamp;
 
-            if (dt > 0 && dt < 0.2f) {
-                float rawZRateRad = e.values[2];
-                float rateDeg = (float)Math.toDegrees(rawZRateRad);
-                rawGyroIntegratedDeg -= rateDeg * dt;
+            // Ignore only invalid/long gaps; do not quantize the steering angle.
+            if (dt > 0f && dt < 0.1f) {
+                float measuredRateDegPerSec = -(float)Math.toDegrees(e.values[2]);
+                float correctedRate = measuredRateDegPerSec - gyroBiasDegPerSec;
 
-                float turnSpeedDegPerSec = Math.abs(rateDeg);
-                float motionFactor = Math.max(0f, 1.0f - (turnSpeedDegPerSec / 3.0f));
-
-                if (calibrationGravity != null && currentGravity != null && motionFactor > 0.01f) {
-                    float dot = (calibrationGravity[0]*currentGravity[0] + 
-                                 calibrationGravity[1]*currentGravity[1] + 
-                                 calibrationGravity[2]*currentGravity[2]);
-                    
-                    float normCalib = (float)Math.sqrt(calibrationGravity[0]*calibrationGravity[0] + 
-                                                      calibrationGravity[1]*calibrationGravity[1] + 
-                                                      calibrationGravity[2]*calibrationGravity[2]);
-                    
-                    float normCurr = (float)Math.sqrt(currentGravity[0]*currentGravity[0] + 
-                                                     currentGravity[1]*currentGravity[1] + 
-                                                     currentGravity[2]*currentGravity[2]);
-
-                    if (normCalib > 0 && normCurr > 0) {
-                        float cosTheta = clamp(dot / (normCalib * normCurr), -1f, 1f);
-                        
-                        // Tight deadband power curve
-                        float proximityWeight = (float)Math.pow(Math.max(0f, cosTheta), 32.0);
-
-                        // Dynamic settling rate: Fast convergence when stationary/near rest (0.15f), smooth when moving
-                        float settlingRate = (turnSpeedDegPerSec < 1.0f) ? 0.15f : 0.03f;
-
-                        float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
-                        zeroCorrectionOffset += currentError * (proximityWeight * motionFactor * settlingRate * (dt * 60f));
-                    }
+                // Light time-based rate filtering reduces sensor jitter without
+                // smoothing away small steering movements or adding much latency.
+                float filterAlpha = dt / (0.035f + dt);
+                if (!gyroRateFilterInitialized) {
+                    filteredGyroRateDegPerSec = correctedRate;
+                    gyroRateFilterInitialized = true;
+                } else {
+                    filteredGyroRateDegPerSec +=
+                            (correctedRate - filteredGyroRateDegPerSec) * filterAlpha;
                 }
 
-                float smoothSteerAngle = rawGyroIntegratedDeg - zeroCorrectionOffset;
+                // Learn residual gyro bias only after the corrected rate has been
+                // very close to zero for a short period. No angle/gravity-based
+                // correction is applied, so steering cannot be pulled toward zero.
+                float accelNorm = 0f;
+                if (currentGravity != null) {
+                    accelNorm = (float)Math.sqrt(
+                            currentGravity[0] * currentGravity[0] +
+                            currentGravity[1] * currentGravity[1] +
+                            currentGravity[2] * currentGravity[2]);
+                }
+                boolean gravityMagnitudePlausible = accelNorm >= 8.0f && accelNorm <= 11.5f;
+                boolean nearlyStill = Math.abs(correctedRate) < 0.18f && gravityMagnitudePlausible;
+                if (nearlyStill) {
+                    if (stationarySinceNs == 0L) stationarySinceNs = e.timestamp;
+                    if (e.timestamp - stationarySinceNs >= 700_000_000L) {
+                        // Very slow adaptation (about a 20-second time constant).
+                        float biasAlpha = dt / (20.0f + dt);
+                        gyroBiasDegPerSec +=
+                                (measuredRateDegPerSec - gyroBiasDegPerSec) * biasAlpha;
+                    }
+                } else {
+                    stationarySinceNs = 0L;
+                }
+
+                rawGyroIntegratedDeg += filteredGyroRateDegPerSec * dt;
+
+                // Smoothly fade the calibration offset over 250 ms. This preserves
+                // continuity at the button press while making the new neutral zero.
+                float fade = 1f;
+                if (calibrationFadeStartNs != 0L) {
+                    float elapsed = (e.timestamp - calibrationFadeStartNs) /
+                            (float) CALIBRATION_FADE_NS;
+                    if (elapsed >= 1f) {
+                        calibrationFadeOffsetDeg = 0f;
+                        calibrationFadeStartNs = 0L;
+                    } else {
+                        float t = clamp(elapsed, 0f, 1f);
+                        fade = t * t * (3f - 2f * t); // smoothstep
+                    }
+                }
+                float outputOffset = calibrationFadeStartNs == 0L
+                        ? calibrationFadeOffsetDeg : calibrationFadeOffsetDeg * (1f - fade);
                 float half = view == null ? 450f : view.rangeDeg / 2f;
-                gyroAngle = clamp(smoothSteerAngle, -half, half);
+                gyroAngle = clamp(rawGyroIntegratedDeg + outputOffset, -half, half);
             }
         }
         if (view != null) view.invalidate();
@@ -293,17 +325,25 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     void calibrate() {
-        gyroAngle = 0f;
+        // Rebase steering to zero without an instantaneous jump in the displayed
+        // wheel. The offset fades out smoothly while new gyro motion is integrated.
+        calibrationFadeOffsetDeg = gyroAngle;
+        calibrationFadeStartNs = android.os.SystemClock.elapsedRealtimeNanos();
         rawGyroIntegratedDeg = 0f;
-        zeroCorrectionOffset = 0f;
+        filteredGyroRateDegPerSec = 0f;
+        gyroRateFilterInitialized = false;
+        lastGyroNs = 0L;
+        stationarySinceNs = 0L;
 
         if (currentGravity != null) {
             calibrationGravity = currentGravity.clone();
         }
 
-        view.wheelAngleDeg = 0f;
-        view.steer = 0f;
-        view.invalidate();
+        if (view != null) {
+            view.wheelAngleDeg = 0f;
+            view.steer = 0f;
+            view.invalidate();
+        }
     }
 
     static float clamp(float v, float a, float b) { return Math.max(a, Math.min(b, v)); }
