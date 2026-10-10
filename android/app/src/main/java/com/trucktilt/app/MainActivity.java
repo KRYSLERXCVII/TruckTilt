@@ -16,6 +16,7 @@ import android.os.BatteryManager;
 import android.graphics.*;
 import android.hardware.*;
 import android.net.wifi.WifiManager;
+import android.opengl.Matrix;
 import android.view.*;
 import java.net.*;
 import java.util.*;
@@ -23,7 +24,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * TruckTilt v1.0 — Pure Hardware Quaternion Steering Engine.
+ * TruckTilt v1.0.1 — Pure Hardware Quaternion Steering Engine.
  * ZERO auto-zero corrections, ZERO snapping, ZERO drift pulling.
  */
 public class MainActivity extends Activity implements SensorEventListener {
@@ -93,7 +94,7 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         // Initialize identity matrices
         SensorManager.getRotationMatrixFromVector(refRotationMatrix, new float[]{0, 0, 0, 1});
-        Matrix.invertM(invRefRotationMatrix, 0, refRotationMatrix, 0);
+        Matrix.transposeM(invRefRotationMatrix, 0, refRotationMatrix, 0);
 
         view = new ControllerView(this);
         net = new UdpClient();
@@ -149,11 +150,11 @@ public class MainActivity extends Activity implements SensorEventListener {
             // 2. Initial calibration lock on startup
             if (!isCalibrated) {
                 System.arraycopy(currentRotationMatrix, 0, refRotationMatrix, 0, 16);
-                Matrix.invertM(invRefRotationMatrix, 0, refRotationMatrix, 0);
+                Matrix.transposeM(invRefRotationMatrix, 0, refRotationMatrix, 0);
                 isCalibrated = true;
             }
 
-            // 3. Compute relative orientation: R_rel = R_current * R_ref_inv
+            // 3. Compute relative orientation: R_rel = R_current * R_ref_inv (using Transpose for Orthogonal Matrices)
             Matrix.multiplyMM(relativeRotationMatrix, 0, currentRotationMatrix, 0, invRefRotationMatrix, 0);
 
             // 4. Extract orientation angles (azimuth, pitch, roll in radians)
@@ -264,7 +265,7 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     void calibrate() {
         System.arraycopy(currentRotationMatrix, 0, refRotationMatrix, 0, 16);
-        Matrix.invertM(invRefRotationMatrix, 0, refRotationMatrix, 0);
+        Matrix.transposeM(invRefRotationMatrix, 0, refRotationMatrix, 0);
         isCalibrated = true;
 
         gyroAngle = 0f;
@@ -353,7 +354,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                         : Color.WHITE;
                 text(c, "BAT " + battery + "%", w - 305, 36, 13, batteryColor, Paint.Align.RIGHT);
             }
-            text(c,"by KRYSLERXCVII  •  v1.0.0",136,37,15,Color.rgb(205,212,220),Paint.Align.LEFT);
+            text(c,"by KRYSLERXCVII  •  v1.0.1",136,37,15,Color.rgb(205,212,220),Paint.Align.LEFT);
 
             donateButton(c,"DONATE",w-82,29,132,38);
 
