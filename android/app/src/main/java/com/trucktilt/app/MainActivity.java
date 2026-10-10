@@ -16,7 +16,6 @@ import android.os.BatteryManager;
 import android.graphics.*;
 import android.hardware.*;
 import android.net.wifi.WifiManager;
-import android.opengl.Matrix;
 import android.view.*;
 import java.net.*;
 import java.util.*;
@@ -24,9 +23,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * TruckTilt v1.0.3 — Absolute Quaternion Hardware Tracking Engine.
- * Replaced gyro integration with direct 3D orientation matrix transforms.
- * ZERO snapping, ZERO auto-zero pulling, and ZERO drift accumulation.
+ * TruckTilt v0.9 — adaptive instant-settling baseline build.
  */
 public class MainActivity extends Activity implements SensorEventListener {
     static final int PORT = 45454;
@@ -35,19 +32,16 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     ControllerView view;
     SensorManager sensors;
-    Sensor gameRotationSensor, accel;
+    Sensor gyro, accel;
 
     float gyroAngle = 0f, tiltAngle = 0f;
+    long lastGyroNs = 0L;
 
-    // Absolute Hardware Quaternion Matrix Tracking
-    private final float[] currentRotationMatrix = new float[16];
-    private final float[] refRotationMatrix = new float[16];
-    private final float[] invRefRotationMatrix = new float[16];
-    private final float[] relativeRotationMatrix = new float[16];
-    private final float[] orientationAngles = new float[3];
-    private final float[] currentGravity = new float[3];
-
-    private boolean isCalibrated = false;
+    // Physical Baseline & Gravity Deadband Tracking
+    float[] calibrationGravity = null;
+    float[] currentGravity = null;
+    float rawGyroIntegratedDeg = 0f;
+    float zeroCorrectionOffset = 0f;
 
     UdpClient net;
     volatile int batteryPercent = -1;
@@ -88,17 +82,8 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
 
         sensors = (SensorManager)getSystemService(SENSOR_SERVICE);
+        gyro = sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
         accel = sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
-        
-        // Priority to TYPE_GAME_ROTATION_VECTOR (no uncalibrated magnetic noise)
-        gameRotationSensor = sensors.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
-        if (gameRotationSensor == null) {
-            gameRotationSensor = sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
-        }
-
-        // Pre-initialize reference matrices
-        SensorManager.getRotationMatrixFromVector(refRotationMatrix, new float[]{0, 0, 0, 1});
-        Matrix.transposeM(invRefRotationMatrix, 0, refRotationMatrix, 0);
 
         view = new ControllerView(this);
         net = new UdpClient();
@@ -124,7 +109,7 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     @Override protected void onResume() {
         super.onResume();
-        if (gameRotationSensor != null) sensors.registerListener(this, gameRotationSensor, SensorManager.SENSOR_DELAY_GAME);
+        if (gyro != null) sensors.registerListener(this, gyro, SensorManager.SENSOR_DELAY_GAME);
         if (accel != null) sensors.registerListener(this, accel, SensorManager.SENSOR_DELAY_GAME);
     }
 
@@ -145,41 +130,58 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     @Override public void onSensorChanged(SensorEvent e) {
         if (e.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
-            currentGravity[0] = currentGravity[0] * 0.90f + e.values[0] * 0.10f;
-            currentGravity[1] = currentGravity[1] * 0.90f + e.values[1] * 0.10f;
-            currentGravity[2] = currentGravity[2] * 0.90f + e.values[2] * 0.10f;
-
-            float norm = (float)Math.sqrt(currentGravity[0]*currentGravity[0] + currentGravity[1]*currentGravity[1] + currentGravity[2]*currentGravity[2]);
+            currentGravity = e.values.clone();
+            
+            float norm = (float)Math.sqrt(e.values[0]*e.values[0] + e.values[1]*e.values[1] + e.values[2]*e.values[2]);
             if (norm > 0) {
-                float pitch = (float)Math.toDegrees(Math.asin(clamp(currentGravity[1]/norm, -1f, 1f)));
+                float pitch = (float)Math.toDegrees(Math.asin(clamp(e.values[1]/norm, -1f, 1f)));
                 tiltAngle = clamp(pitch, -45f, 45f);
             }
         } 
-        else if (e.sensor.getType() == Sensor.TYPE_GAME_ROTATION_VECTOR || 
-                 e.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR) {
+        else if (e.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
+            if (lastGyroNs == 0) lastGyroNs = e.timestamp;
+            float dt = (e.timestamp - lastGyroNs) / 1_000_000_000f;
+            lastGyroNs = e.timestamp;
 
-            // 1. Convert current quaternion pose into 4x4 orientation matrix
-            SensorManager.getRotationMatrixFromVector(currentRotationMatrix, e.values);
+            if (dt > 0 && dt < 0.2f) {
+                float rawZRateRad = e.values[2];
+                float rateDeg = (float)Math.toDegrees(rawZRateRad);
+                rawGyroIntegratedDeg -= rateDeg * dt;
 
-            // 2. Lock relative origin matrix on initial calibration
-            if (!isCalibrated) {
-                System.arraycopy(currentRotationMatrix, 0, refRotationMatrix, 0, 16);
-                Matrix.transposeM(invRefRotationMatrix, 0, refRotationMatrix, 0);
-                isCalibrated = true;
+                float turnSpeedDegPerSec = Math.abs(rateDeg);
+                float motionFactor = Math.max(0f, 1.0f - (turnSpeedDegPerSec / 3.0f));
+
+                if (calibrationGravity != null && currentGravity != null && motionFactor > 0.01f) {
+                    float dot = (calibrationGravity[0]*currentGravity[0] + 
+                                 calibrationGravity[1]*currentGravity[1] + 
+                                 calibrationGravity[2]*currentGravity[2]);
+                    
+                    float normCalib = (float)Math.sqrt(calibrationGravity[0]*calibrationGravity[0] + 
+                                                      calibrationGravity[1]*calibrationGravity[1] + 
+                                                      calibrationGravity[2]*calibrationGravity[2]);
+                    
+                    float normCurr = (float)Math.sqrt(currentGravity[0]*currentGravity[0] + 
+                                                     currentGravity[1]*currentGravity[1] + 
+                                                     currentGravity[2]*currentGravity[2]);
+
+                    if (normCalib > 0 && normCurr > 0) {
+                        float cosTheta = clamp(dot / (normCalib * normCurr), -1f, 1f);
+                        
+                        // Tight deadband power curve
+                        float proximityWeight = (float)Math.pow(Math.max(0f, cosTheta), 32.0);
+
+                        // Dynamic settling rate: Fast convergence when stationary/near rest (0.15f), smooth when moving
+                        float settlingRate = (turnSpeedDegPerSec < 1.0f) ? 0.15f : 0.03f;
+
+                        float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
+                        zeroCorrectionOffset += currentError * (proximityWeight * motionFactor * settlingRate * (dt * 60f));
+                    }
+                }
+
+                float smoothSteerAngle = rawGyroIntegratedDeg - zeroCorrectionOffset;
+                float half = view == null ? 450f : view.rangeDeg / 2f;
+                gyroAngle = clamp(smoothSteerAngle, -half, half);
             }
-
-            // 3. Compute exact relative matrix offset (R_rel = R_current * R_ref_transpose)
-            Matrix.multiplyMM(relativeRotationMatrix, 0, currentRotationMatrix, 0, invRefRotationMatrix, 0);
-
-            // 4. Extract Euler orientation angles from relative transformation matrix
-            SensorManager.getOrientation(relativeRotationMatrix, orientationAngles);
-
-            // 5. Extract Z-axis landscape roll degrees
-            float rollDegrees = (float) Math.toDegrees(orientationAngles[2]);
-
-            // Clamp output based on selected range (e.g. 900°, 1080°)
-            float halfRange = view == null ? 450f : view.rangeDeg / 2f;
-            gyroAngle = clamp(rollDegrees, -halfRange, halfRange);
         }
         if (view != null) view.invalidate();
     }
@@ -291,12 +293,14 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     void calibrate() {
-        // Absolute Orientation Offset Snapshot
-        System.arraycopy(currentRotationMatrix, 0, refRotationMatrix, 0, 16);
-        Matrix.transposeM(invRefRotationMatrix, 0, refRotationMatrix, 0);
-        isCalibrated = true;
-
         gyroAngle = 0f;
+        rawGyroIntegratedDeg = 0f;
+        zeroCorrectionOffset = 0f;
+
+        if (currentGravity != null) {
+            calibrationGravity = currentGravity.clone();
+        }
+
         view.wheelAngleDeg = 0f;
         view.steer = 0f;
         view.invalidate();
@@ -391,7 +395,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                         : Color.WHITE;
                 text(c, "BAT " + battery + "%", w - 305, 36, 13, batteryColor, Paint.Align.RIGHT);
             }
-            text(c,"by KRYSLERXCVII  •  v1.0.3",136,37,15,Color.rgb(205,212,220),Paint.Align.LEFT);
+            text(c,"by KRYSLERXCVII  •  v0.14.0",136,37,15,Color.rgb(205,212,220),Paint.Align.LEFT);
 
             donateButton(c,"DONATE",w-82,29,132,38);
 
