@@ -548,10 +548,10 @@ public class MainActivity extends Activity implements SensorEventListener {
                 // Do not suppress shift-up hints when the host omits gear count.
                 // Use wider thresholds so prompts are visible during play.
                 boolean hasRpmRange = telemetryRpmMax > 100f;
-                boolean hasMoreGears = telemetryGearCount <= 0
-                        || telemetryGear < telemetryGearCount;
+                // RPM is the primary shift hint. Do not suppress SHIFT UP
+                // because game telemetry reports a different gear-count convention.
                 boolean shiftUp = hasRpmRange && telemetryGear > 0
-                        && hasMoreGears && rpmRatio >= 0.65f;
+                        && rpmRatio >= 0.65f;
                 boolean shiftDown = hasRpmRange && telemetryGear > 1
                         && rpmRatio <= 0.30f;
                 String gearLabel = telemetryGear < 0 ? "R" : telemetryGear == 0 ? "N" : String.valueOf(telemetryGear);
