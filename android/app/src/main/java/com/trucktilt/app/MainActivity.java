@@ -223,7 +223,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                         float cosTheta = clamp(dot / (normCalib * accelNorm), -1f, 1f);
                         float referenceDeviationDeg =
                                 (float)Math.toDegrees(Math.acos(cosTheta));
-                        final float REFERENCE_DEADBAND_DEG = 1.5f;
+                        final float REFERENCE_DEADBAND_DEG = 2.5f;
                         boolean atReference =
                                 referenceDeviationDeg < REFERENCE_DEADBAND_DEG;
                         boolean gyroSettled = Math.abs(correctedRate) < 0.18f
