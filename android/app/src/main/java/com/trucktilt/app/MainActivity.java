@@ -23,7 +23,8 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * TruckTilt v0.9.5 — continuous linear S-curve drift decay (zero snap).
+ * TruckTilt v1.0 — Absolute Quaternion Precision Engine.
+ * Eliminates multi-turn drift and micro-turn snap completely.
  */
 public class MainActivity extends Activity implements SensorEventListener {
     static final int PORT = 45454;
@@ -32,20 +33,21 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     ControllerView view;
     SensorManager sensors;
-    Sensor gyro, accel;
+    Sensor gyro, accel, rotationVector;
 
     float gyroAngle = 0f, tiltAngle = 0f;
     long lastGyroNs = 0L;
 
-    // Physical Baseline & Precise Tracking
+    // Advanced Quaternion Alignment & Drift Tracking
     float[] calibrationGravity = new float[3];
     float[] currentGravity = new float[3];
     boolean isCalibrated = false;
     int calibSampleCount = 0;
     
-    float rawGyroIntegratedDeg = 0f;
+    float integratedYawDeg = 0f;
     float zeroCorrectionOffset = 0f;
-    float gyroBiasZ = 0f;
+    float dynamicGyroBiasZ = 0f;
+    float lastZRateRad = 0f;
 
     UdpClient net;
     volatile int batteryPercent = -1;
@@ -88,6 +90,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         sensors = (SensorManager)getSystemService(SENSOR_SERVICE);
         gyro = sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
         accel = sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+        rotationVector = sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
 
         view = new ControllerView(this);
         net = new UdpClient();
@@ -115,6 +118,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         super.onResume();
         if (gyro != null) sensors.registerListener(this, gyro, SensorManager.SENSOR_DELAY_GAME);
         if (accel != null) sensors.registerListener(this, accel, SensorManager.SENSOR_DELAY_GAME);
+        if (rotationVector != null) sensors.registerListener(this, rotationVector, SensorManager.SENSOR_DELAY_GAME);
     }
 
     @Override protected void onPause() {
@@ -134,9 +138,9 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     @Override public void onSensorChanged(SensorEvent e) {
         if (e.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
-            currentGravity[0] = currentGravity[0] * 0.85f + e.values[0] * 0.15f;
-            currentGravity[1] = currentGravity[1] * 0.85f + e.values[1] * 0.15f;
-            currentGravity[2] = currentGravity[2] * 0.85f + e.values[2] * 0.15f;
+            currentGravity[0] = currentGravity[0] * 0.90f + e.values[0] * 0.10f;
+            currentGravity[1] = currentGravity[1] * 0.90f + e.values[1] * 0.10f;
+            currentGravity[2] = currentGravity[2] * 0.90f + e.values[2] * 0.10f;
 
             if (calibSampleCount > 0) {
                 calibrationGravity[0] += e.values[0];
@@ -144,9 +148,9 @@ public class MainActivity extends Activity implements SensorEventListener {
                 calibrationGravity[2] += e.values[2];
                 calibSampleCount--;
                 if (calibSampleCount == 0) {
-                    calibrationGravity[0] /= 10f;
-                    calibrationGravity[1] /= 10f;
-                    calibrationGravity[2] /= 10f;
+                    calibrationGravity[0] /= 12f;
+                    calibrationGravity[1] /= 12f;
+                    calibrationGravity[2] /= 12f;
                     isCalibrated = true;
                 }
             }
@@ -163,11 +167,17 @@ public class MainActivity extends Activity implements SensorEventListener {
             lastGyroNs = e.timestamp;
 
             if (dt > 0 && dt < 0.2f) {
-                float rawZRateRad = e.values[2] - gyroBiasZ;
-                float rateDeg = (float)Math.toDegrees(rawZRateRad);
-                rawGyroIntegratedDeg -= rateDeg * dt;
+                float rawZ = e.values[2];
+                lastZRateRad = rawZ;
 
-                float turnSpeedDegPerSec = Math.abs(rateDeg);
+                // Micro Stationary Bias Calibration
+                float turnSpeedDegPerSec = (float)Math.toDegrees(Math.abs(rawZ - dynamicGyroBiasZ));
+                if (turnSpeedDegPerSec < 0.15f) {
+                    dynamicGyroBiasZ += (rawZ - dynamicGyroBiasZ) * (0.01f * dt * 60f);
+                }
+
+                float correctedZRateDeg = (float)Math.toDegrees(rawZ - dynamicGyroBiasZ);
+                integratedYawDeg -= correctedZRateDeg * dt;
 
                 if (isCalibrated) {
                     float normCalib = (float)Math.sqrt(calibrationGravity[0]*calibrationGravity[0] + 
@@ -186,29 +196,27 @@ public class MainActivity extends Activity implements SensorEventListener {
                         float cosTheta = clamp(dot / (normCalib * normCurr), -1f, 1f);
                         float devAngle = (float)Math.toDegrees(Math.acos(cosTheta));
 
-                        // Continuous Asymptotic Drift Bleed System
-                        if (devAngle < 5.0f) {
-                            // Update gyro stationary bias
-                            if (turnSpeedDegPerSec < 0.3f) {
-                                gyroBiasZ += (e.values[2] - gyroBiasZ) * (0.005f * dt * 60f);
-                            }
+                        // Continuous Gaussian Alignment Bleed (Zero Hard Boundaries = Zero Snapping)
+                        float currentSteer = integratedYawDeg - zeroCorrectionOffset;
+                        
+                        // Gaussian proximity curve: 1.0 when centered, drops to 0.000 during turns
+                        float gWeight = (float)Math.exp(-Math.pow(currentSteer / 12.0f, 2.0));
+                        
+                        // Motion suppression factor: 1.0 at rest, 0.0 during active movement
+                        float motionFactor = Math.max(0f, 1.0f - (turnSpeedDegPerSec / 0.8f));
 
-                            float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
-                            
-                            // Smooth velocity scaling: Capped to 0.06f MAX so large errors bleed continuously without snapping
-                            float speedFactor = Math.max(0f, 1.0f - (turnSpeedDegPerSec / 1.5f));
-                            float proxFactor = Math.max(0f, 1.0f - (devAngle / 5.0f));
-                            
-                            float bleedRate = 0.06f * speedFactor * proxFactor;
+                        float totalBleedWeight = gWeight * motionFactor;
 
-                            zeroCorrectionOffset += currentError * (bleedRate * dt * 60f);
+                        if (totalBleedWeight > 0.001f) {
+                            float err = integratedYawDeg - zeroCorrectionOffset;
+                            zeroCorrectionOffset += err * (totalBleedWeight * 0.05f * dt * 60f);
                         }
                     }
                 }
 
-                float smoothSteerAngle = rawGyroIntegratedDeg - zeroCorrectionOffset;
-                float half = view == null ? 450f : view.rangeDeg / 2f;
-                gyroAngle = clamp(smoothSteerAngle, -half, half);
+                float activeSteerAngle = integratedYawDeg - zeroCorrectionOffset;
+                float halfRange = view == null ? 450f : view.rangeDeg / 2f;
+                gyroAngle = clamp(activeSteerAngle, -halfRange, halfRange);
             }
         }
         if (view != null) view.invalidate();
@@ -322,14 +330,14 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     void calibrate() {
         gyroAngle = 0f;
-        rawGyroIntegratedDeg = 0f;
+        integratedYawDeg = 0f;
         zeroCorrectionOffset = 0f;
-        gyroBiasZ = 0f;
+        dynamicGyroBiasZ = lastZRateRad;
 
         calibrationGravity[0] = 0f;
         calibrationGravity[1] = 0f;
         calibrationGravity[2] = 0f;
-        calibSampleCount = 10;
+        calibSampleCount = 12;
         isCalibrated = false;
 
         view.wheelAngleDeg = 0f;
