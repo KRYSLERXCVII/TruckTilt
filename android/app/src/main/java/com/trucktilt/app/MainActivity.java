@@ -284,6 +284,8 @@ public class MainActivity extends Activity implements SensorEventListener {
         if (view != null) view.invalidate();
     }
 
+
+    // Telemetry-only HUD parsing; does not touch steering or sensor calculations.
     void handleTelemetryHud(String message) {
         try {
             String[] p = message.trim().split("\\|");
@@ -514,12 +516,11 @@ public class MainActivity extends Activity implements SensorEventListener {
             String status=net.connected ? net.rttMs+" ms  •  "+net.rate+" Hz  •  TX "+net.txCount : "Wi-Fi only • auto discovery";
             text(c,status,w-168,42,10,Color.LTGRAY,Paint.Align.RIGHT);
 
-            // Live telemetry readouts: speed and RPM together in the bottom-left corner.
+            // Telemetry overlays only: compact speed and RPM panels at bottom-left.
             if (telemetryGear != Integer.MIN_VALUE) {
                 float hudBottom = h - 18f;
                 p.setStyle(Paint.Style.FILL);
                 p.setColor(Color.argb(220, 18, 23, 28));
-                // Two compact panels side-by-side at bottom-left, matching the requested layout.
                 c.drawRoundRect(new RectF(14f, h - 76f, 116f, h - 12f), 10f, 10f, p);
                 c.drawRoundRect(new RectF(124f, h - 76f, 248f, h - 12f), 10f, 10f, p);
                 text(c, String.format(Locale.US, "%.0f", telemetrySpeedKmh), 65f, h - 40f,
@@ -538,33 +539,35 @@ public class MainActivity extends Activity implements SensorEventListener {
                         136f + 100f * rpmRatio, h - 19f), 3f, 3f, p);
             }
 
-            // Racing-style telemetry shift prompt in the top-center header area.
+            // Shift prompt based on telemetry only.
             if (telemetryGear != Integer.MIN_VALUE) {
+                float rpmRatio = telemetryRpmMax > 100f
+                        ? clamp(telemetryRpm / telemetryRpmMax, 0f, 1f) : 0f;
+                // Use a visible text status at all times while telemetry is active.
+                // Shift prompts use wider RPM bands so they are easier to notice.
                 boolean shiftUp = telemetryRpmMax > 100f && telemetryGear > 0
                         && telemetryGearCount > 0 && telemetryGear < telemetryGearCount
-                        && telemetryRpm / telemetryRpmMax >= 0.86f;
+                        && rpmRatio >= 0.78f;
                 boolean shiftDown = telemetryRpmMax > 100f && telemetryGear > 1
-                        && telemetryRpm / telemetryRpmMax <= 0.22f;
+                        && rpmRatio <= 0.25f;
                 String gearLabel = telemetryGear < 0 ? "R" : telemetryGear == 0 ? "N" : String.valueOf(telemetryGear);
                 int gearColor = shiftUp ? Color.rgb(255,190,55)
                         : shiftDown ? Color.rgb(100,190,255) : Color.WHITE;
                 text(c, "GEAR " + gearLabel, w * 0.50f, 18, 11, gearColor, Paint.Align.CENTER);
-                if (shiftUp || shiftDown) {
-                    String prompt = shiftUp ? "▲ SHIFT UP!" : "▼ SHIFT DOWN!";
-                    int promptColor = shiftUp ? Color.rgb(255,190,55) : Color.rgb(100,190,255);
-                    p.setStyle(Paint.Style.FILL);
-                    p.setColor(Color.rgb(24,29,34));
-                    c.drawRoundRect(new RectF(w*0.50f-55,25,w*0.50f+55,49),7,7,p);
-                    text(c, prompt, w * 0.50f, 41, 12, promptColor, Paint.Align.CENTER);
-                } else {
-                    float ratio = telemetryRpmMax > 100f
-                            ? clamp(telemetryRpm / telemetryRpmMax, 0f, 1f) : 0f;
-                    p.setStyle(Paint.Style.FILL);
-                    p.setColor(Color.rgb(40,46,50));
-                    c.drawRoundRect(new RectF(w*0.50f-48,25,w*0.50f+48,30),3,3,p);
-                    p.setColor(ratio >= 0.86f ? Color.rgb(255,190,55) : Color.rgb(139,195,74));
-                    c.drawRoundRect(new RectF(w*0.50f-48,25,w*0.50f-48+96*ratio,30),3,3,p);
-                }
+                String prompt = shiftUp ? "▲ SHIFT UP!"
+                        : shiftDown ? "▼ SHIFT DOWN!" : "RPM / HOLD GEAR";
+                int promptColor = shiftUp ? Color.rgb(255,190,55)
+                        : shiftDown ? Color.rgb(100,190,255) : Color.rgb(170,180,188);
+                p.setStyle(Paint.Style.FILL);
+                p.setColor(Color.rgb(24,29,34));
+                c.drawRoundRect(new RectF(w*0.50f-65,25,w*0.50f+65,49),7,7,p);
+                text(c, prompt, w * 0.50f, 41, 11, promptColor, Paint.Align.CENTER);
+                // Small RPM bar remains below the text status.
+                p.setColor(Color.rgb(40,46,50));
+                c.drawRoundRect(new RectF(w*0.50f-48,51,w*0.50f+48,56),3,3,p);
+                p.setColor(rpmRatio >= 0.78f ? Color.rgb(255,190,55)
+                        : rpmRatio >= 0.60f ? Color.rgb(100,190,255) : Color.rgb(139,195,74));
+                c.drawRoundRect(new RectF(w*0.50f-48,51,w*0.50f-48+96*rpmRatio,56),3,3,p);
             }
 
             float leftWidth=w*.34f;
