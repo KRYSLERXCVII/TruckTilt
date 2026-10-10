@@ -514,27 +514,28 @@ public class MainActivity extends Activity implements SensorEventListener {
             String status=net.connected ? net.rttMs+" ms  •  "+net.rate+" Hz  •  TX "+net.txCount : "Wi-Fi only • auto discovery";
             text(c,status,w-168,42,10,Color.LTGRAY,Paint.Align.RIGHT);
 
-            // Live telemetry corner readouts: speed bottom-left and RPM bottom-right.
+            // Live telemetry readouts: speed and RPM together in the bottom-left corner.
             if (telemetryGear != Integer.MIN_VALUE) {
                 float hudBottom = h - 18f;
                 p.setStyle(Paint.Style.FILL);
                 p.setColor(Color.argb(220, 18, 23, 28));
-                c.drawRoundRect(new RectF(18f, h - 76f, 154f, h - 12f), 10f, 10f, p);
-                c.drawRoundRect(new RectF(w - 154f, h - 76f, w - 18f, h - 12f), 10f, 10f, p);
-                text(c, String.format(Locale.US, "%.0f", telemetrySpeedKmh), 86f, h - 40f,
-                        24f, Color.WHITE, Paint.Align.CENTER);
-                text(c, "KM/H", 86f, hudBottom - 1f, 10f, Color.rgb(170, 180, 188), Paint.Align.CENTER);
-                text(c, String.format(Locale.US, "%.0f", telemetryRpm), w - 86f, h - 40f,
-                        21f, Color.WHITE, Paint.Align.CENTER);
-                text(c, "RPM", w - 86f, hudBottom - 1f, 10f, Color.rgb(170, 180, 188), Paint.Align.CENTER);
+                // Two compact panels side-by-side at bottom-left, matching the requested layout.
+                c.drawRoundRect(new RectF(14f, h - 76f, 116f, h - 12f), 10f, 10f, p);
+                c.drawRoundRect(new RectF(124f, h - 76f, 248f, h - 12f), 10f, 10f, p);
+                text(c, String.format(Locale.US, "%.0f", telemetrySpeedKmh), 65f, h - 40f,
+                        23f, Color.WHITE, Paint.Align.CENTER);
+                text(c, "KM/H", 65f, hudBottom - 1f, 10f, Color.rgb(170, 180, 188), Paint.Align.CENTER);
+                text(c, String.format(Locale.US, "%.0f", telemetryRpm), 186f, h - 43f,
+                        20f, Color.WHITE, Paint.Align.CENTER);
+                text(c, "RPM", 186f, h - 31f, 9f, Color.rgb(170, 180, 188), Paint.Align.CENTER);
                 float rpmRatio = telemetryRpmMax > 100f
                         ? clamp(telemetryRpm / telemetryRpmMax, 0f, 1f) : 0f;
                 p.setColor(Color.rgb(40, 46, 50));
-                c.drawRoundRect(new RectF(w - 140f, h - 30f, w - 32f, h - 25f), 3f, 3f, p);
+                c.drawRoundRect(new RectF(136f, h - 24f, 236f, h - 19f), 3f, 3f, p);
                 p.setColor(rpmRatio >= 0.86f ? Color.rgb(255, 190, 55)
                         : rpmRatio >= 0.70f ? Color.rgb(100, 190, 255) : Color.rgb(139, 195, 74));
-                c.drawRoundRect(new RectF(w - 140f, h - 30f,
-                        w - 140f + 108f * rpmRatio, h - 25f), 3f, 3f, p);
+                c.drawRoundRect(new RectF(136f, h - 24f,
+                        136f + 100f * rpmRatio, h - 19f), 3f, 3f, p);
             }
 
             // Racing-style telemetry shift prompt in the top-center header area.

@@ -14,11 +14,11 @@ internal sealed class TelemetryHaptics : IDisposable
 
     // Rev. 12 shared-memory offsets from scs-telemetry-common.hpp.
     private const int SdkActiveOffset = 0;
-    private const int GearsOffset = 68;             // config_ui.gears
+    private const int GearsOffset = 44;             // config_ui.gears (Rev. 12)
     private const int GearOffset = 504;             // truck_i.gear (500 is common_i.restStop)
     private const int EngineRpmMaxOffset = 740;     // config_f.engineRpmMax
-    private const int EngineRpmOffset = 876;        // truck_f.engineRpm (truck_f starts at 872)
-    private const int SpeedOffset = 872;             // truck_f.speed (m/s, Rev. 12; truck_f starts at 872)
+    private const int EngineRpmOffset = 952;        // truck_f.engineRpm (truck_f starts at 948)
+    private const int SpeedOffset = 948;            // truck_f.speed (m/s, Rev. 12; truck_f starts at 948)
     private const int WheelSubstanceOffset = 96;    // truck_ui.truck_wheelSubstance[0]
     private const int PoweredWheelsOffset = 1516;   // config_b.truckWheelPowered[0]
     private const int EngineEnabledOffset = 1576;   // truck_b.engineEnabled
