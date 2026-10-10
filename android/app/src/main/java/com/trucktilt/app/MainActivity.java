@@ -37,15 +37,22 @@ public class MainActivity extends Activity implements SensorEventListener {
     float gyroAngle = 0f, tiltAngle = 0f;
     long lastGyroNs = 0L;
 
-    // Physical baseline and smoothed gyro steering.
+    // Gyro steering: integrate angular rate without gravity-based recentering.
     float[] calibrationGravity = null;
     float[] currentGravity = null;
     float rawGyroIntegratedDeg = 0f;
+    // Slowly removes accumulated gyro drift when the phone returns to its
+    // calibrated physical orientation. The gyro filter remains responsible
+    // for smooth steering; this offset only corrects the accumulated error.
     float zeroCorrectionOffset = 0f;
     float gyroBiasDegPerSec = 0f;
     float filteredGyroRateDegPerSec = 0f;
     boolean gyroRateFilterInitialized = false;
     long stationarySinceNs = 0L;
+    // A short output-offset fade makes recalibration smooth instead of snapping.
+    float calibrationFadeOffsetDeg = 0f;
+    long calibrationFadeStartNs = 0L;
+    static final long CALIBRATION_FADE_NS = 250_000_000L;
 
     UdpClient net;
     volatile int batteryPercent = -1;
@@ -150,12 +157,13 @@ public class MainActivity extends Activity implements SensorEventListener {
             float dt = (e.timestamp - lastGyroNs) / 1_000_000_000f;
             lastGyroNs = e.timestamp;
 
-            // Ignore invalid or long gaps; keep normal steering updates responsive.
+            // Ignore only invalid/long gaps; do not quantize the steering angle.
             if (dt > 0f && dt < 0.1f) {
                 float measuredRateDegPerSec = -(float)Math.toDegrees(e.values[2]);
                 float correctedRate = measuredRateDegPerSec - gyroBiasDegPerSec;
 
-                // Short time-based filter dampens sensor jitter without a heavy steering delay.
+                // Light time-based rate filtering reduces sensor jitter without
+                // smoothing away small steering movements or adding much latency.
                 float filterAlpha = dt / (0.035f + dt);
                 if (!gyroRateFilterInitialized) {
                     filteredGyroRateDegPerSec = correctedRate;
@@ -165,6 +173,9 @@ public class MainActivity extends Activity implements SensorEventListener {
                             (correctedRate - filteredGyroRateDegPerSec) * filterAlpha;
                 }
 
+                // Learn residual gyro bias only after the corrected rate has been
+                // very close to zero for a short period. No angle/gravity-based
+                // correction is applied, so steering cannot be pulled toward zero.
                 float accelNorm = 0f;
                 if (currentGravity != null) {
                     accelNorm = (float)Math.sqrt(
@@ -173,14 +184,11 @@ public class MainActivity extends Activity implements SensorEventListener {
                             currentGravity[2] * currentGravity[2]);
                 }
                 boolean gravityMagnitudePlausible = accelNorm >= 8.0f && accelNorm <= 11.5f;
-
-                // Learn only a tiny residual bias after the phone has been still for a while.
-                boolean nearlyStill = Math.abs(correctedRate) < 0.18f
-                        && Math.abs(filteredGyroRateDegPerSec) < 0.25f
-                        && gravityMagnitudePlausible;
+                boolean nearlyStill = Math.abs(correctedRate) < 0.18f && gravityMagnitudePlausible;
                 if (nearlyStill) {
                     if (stationarySinceNs == 0L) stationarySinceNs = e.timestamp;
                     if (e.timestamp - stationarySinceNs >= 700_000_000L) {
+                        // Very slow adaptation (about a 20-second time constant).
                         float biasAlpha = dt / (20.0f + dt);
                         gyroBiasDegPerSec +=
                                 (measuredRateDegPerSec - gyroBiasDegPerSec) * biasAlpha;
@@ -191,55 +199,73 @@ public class MainActivity extends Activity implements SensorEventListener {
 
                 rawGyroIntegratedDeg += filteredGyroRateDegPerSec * dt;
 
-                // Physical-neutral-zone recovery:
-                // Preserve this build's smooth gyro filtering and bias learning, but
-                // only correct accumulated steering when the phone is close to its
-                // calibrated physical orientation. A soft zone edge avoids a sudden pull.
+                // Reliable soft return-to-reference recovery:
+                // keep the hybrid gyro steering response, but remove the narrow hard gates
+                // that could leave a residual angle uncorrected. Recovery fades in over a
+                // wider physical-reference zone and still slows down during active steering.
                 if (calibrationGravity != null && currentGravity != null
                         && gravityMagnitudePlausible) {
-                    float turnSpeedDegPerSec = Math.abs(filteredGyroRateDegPerSec);
-                    float motionFactor = Math.max(0f, 1f - turnSpeedDegPerSec / 3.0f);
+                    float turnSpeedDegPerSec = Math.abs(correctedRate);
+                    // Do not abruptly disable recovery at 3 deg/s; taper it more gradually.
+                    float motionFactor = Math.max(0f, 1f - turnSpeedDegPerSec / 5f);
 
-                    if (motionFactor > 0.01f) {
-                        float dot =
-                                calibrationGravity[0] * currentGravity[0] +
-                                calibrationGravity[1] * currentGravity[1] +
-                                calibrationGravity[2] * currentGravity[2];
-                        float normCalib = (float)Math.sqrt(
-                                calibrationGravity[0] * calibrationGravity[0] +
-                                calibrationGravity[1] * calibrationGravity[1] +
-                                calibrationGravity[2] * calibrationGravity[2]);
+                    float dot =
+                            calibrationGravity[0] * currentGravity[0] +
+                            calibrationGravity[1] * currentGravity[1] +
+                            calibrationGravity[2] * currentGravity[2];
 
-                        if (normCalib > 0f && accelNorm > 0f) {
-                            float cosTheta = clamp(dot / (normCalib * accelNorm), -1f, 1f);
-                            float referenceDeviationDeg =
-                                    (float)Math.toDegrees(Math.acos(cosTheta));
+                    float normCalib = (float)Math.sqrt(
+                            calibrationGravity[0] * calibrationGravity[0] +
+                            calibrationGravity[1] * calibrationGravity[1] +
+                            calibrationGravity[2] * calibrationGravity[2]);
+                    float normCurr = accelNorm;
 
-                            // Recovery fades out by 3 degrees from the calibrated pose.
-                            // This leaves ordinary steering alone but can still correct
-                            // a small residual (around 2 degrees) near physical zero.
-                            final float RECOVERY_ZONE_DEG = 3.0f;
-                            float zoneProgress = clamp(
-                                    (RECOVERY_ZONE_DEG - referenceDeviationDeg)
-                                            / RECOVERY_ZONE_DEG,
-                                    0f, 1f);
-                            float zoneWeight = zoneProgress * zoneProgress;
+                    if (normCalib > 0f && normCurr > 0f) {
+                        float cosTheta = clamp(dot / (normCalib * normCurr), -1f, 1f);
+                        float referenceDeviationDeg =
+                                (float)Math.toDegrees(Math.acos(cosTheta));
 
-                            // Keep the original build's gentle settling character.
-                            float settlingRate =
-                                    turnSpeedDegPerSec < 1.0f ? 0.045f : 0.012f;
-                            float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
-                            float correctionAlpha = clamp(
-                                    zoneWeight * motionFactor * settlingRate * (dt * 60f),
-                                    0f, 0.06f);
-                            zeroCorrectionOffset += currentError * correctionAlpha;
+                        float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
+                        final float DRIFT_RECOVERY_TRIGGER_DEG = 1.0f;
+                        final float REFERENCE_RECOVERY_WINDOW_DEG = 10.0f;
+                        float proximityWeight = 0f;
+
+                        if (Math.abs(currentError) > DRIFT_RECOVERY_TRIGGER_DEG
+                                && referenceDeviationDeg < REFERENCE_RECOVERY_WINDOW_DEG) {
+                            float closeness = 1f -
+                                    referenceDeviationDeg / REFERENCE_RECOVERY_WINDOW_DEG;
+                            // Smooth quadratic fade: correction becomes stronger near the
+                            // calibrated physical position without a sudden on/off edge.
+                            proximityWeight = closeness * closeness;
                         }
+
+                        // Keep the hybrid's familiar gentle settling, with reduced gain
+                        // during motion so recovery does not feel like an abrupt self-centering snap.
+                        float settlingRate = turnSpeedDegPerSec < 1f ? 0.055f : 0.015f;
+                        zeroCorrectionOffset += currentError *
+                                proximityWeight * motionFactor * settlingRate * (dt * 60f);
                     }
                 }
 
-                float smoothSteerAngle = rawGyroIntegratedDeg - zeroCorrectionOffset;
+                // Smoothly fade the calibration offset over 250 ms. This preserves
+                // continuity at the button press while making the new neutral zero.
+                float fade = 1f;
+                if (calibrationFadeStartNs != 0L) {
+                    float elapsed = (e.timestamp - calibrationFadeStartNs) /
+                            (float) CALIBRATION_FADE_NS;
+                    if (elapsed >= 1f) {
+                        calibrationFadeOffsetDeg = 0f;
+                        calibrationFadeStartNs = 0L;
+                    } else {
+                        float t = clamp(elapsed, 0f, 1f);
+                        fade = t * t * (3f - 2f * t); // smoothstep
+                    }
+                }
+                float outputOffset = calibrationFadeStartNs == 0L
+                        ? calibrationFadeOffsetDeg : calibrationFadeOffsetDeg * (1f - fade);
                 float half = view == null ? 450f : view.rangeDeg / 2f;
-                gyroAngle = clamp(smoothSteerAngle, -half, half);
+                gyroAngle = clamp(rawGyroIntegratedDeg - zeroCorrectionOffset + outputOffset,
+                        -half, half);
             }
         }
         if (view != null) view.invalidate();
@@ -352,21 +378,26 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     void calibrate() {
-        gyroAngle = 0f;
+        // Rebase steering to zero without an instantaneous jump in the displayed
+        // wheel. The offset fades out smoothly while new gyro motion is integrated.
+        calibrationFadeOffsetDeg = gyroAngle;
+        calibrationFadeStartNs = android.os.SystemClock.elapsedRealtimeNanos();
         rawGyroIntegratedDeg = 0f;
         zeroCorrectionOffset = 0f;
-        lastGyroNs = 0L;
         filteredGyroRateDegPerSec = 0f;
         gyroRateFilterInitialized = false;
+        lastGyroNs = 0L;
         stationarySinceNs = 0L;
 
         if (currentGravity != null) {
             calibrationGravity = currentGravity.clone();
         }
 
-        view.wheelAngleDeg = 0f;
-        view.steer = 0f;
-        view.invalidate();
+        if (view != null) {
+            view.wheelAngleDeg = 0f;
+            view.steer = 0f;
+            view.invalidate();
+        }
     }
 
     static float clamp(float v, float a, float b) { return Math.max(a, Math.min(b, v)); }
