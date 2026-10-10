@@ -231,7 +231,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                             // untouched, while allowing larger accumulated drift to be
                             // corrected when the phone returns close to its calibrated pose.
                             float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
-                            final float DRIFT_RECOVERY_TRIGGER_DEG = 7.0f;
+                            final float DRIFT_RECOVERY_TRIGGER_DEG = 4.5f;
                             final float REFERENCE_RECOVERY_WINDOW_DEG = 5.0f;
                             float proximityWeight = 0f;
 
@@ -245,7 +245,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                             // Recover faster when nearly stopped at the reference pose;
                             // the accumulated-angle threshold prevents the correction from
                             // pulling ordinary small-angle steering back toward zero.
-                            float settlingRate = turnSpeedDegPerSec < 1f ? 0.20f : 0.03f;
+                            float settlingRate = turnSpeedDegPerSec < 1f ? 0.25f : 0.03f;
                             zeroCorrectionOffset += currentError *
                                     proximityWeight * motionFactor * settlingRate * (dt * 60f);
                         }
