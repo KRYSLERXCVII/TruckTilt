@@ -202,6 +202,8 @@ public class MainActivity extends Activity implements SensorEventListener {
 
                 rawGyroIntegratedDeg += filteredGyroRateDegPerSec * dt;
 
+                // EXPERIMENTAL TEST BUILD: recovery trigger/gain increased;
+                // gyro integration, filtering, calibration and controls remain unchanged.
                 // Soft return-to-reference recovery:
                 // retain the filtered gyro response, but gently correct accumulated
                 // angle error when the phone comes back near its calibrated physical zone.
@@ -210,7 +212,10 @@ public class MainActivity extends Activity implements SensorEventListener {
                 if (calibrationGravity != null && currentGravity != null
                         && gravityMagnitudePlausible) {
                     float turnSpeedDegPerSec = Math.abs(correctedRate);
-                    float motionFactor = Math.max(0f, 1f - turnSpeedDegPerSec / 3f);
+                    // TEST TUNING: keep recovery available during gentle movement,
+                    // rather than fading it completely out near 3 degrees/second.
+                    float motionFactor = Math.max(0.15f,
+                            1f - turnSpeedDegPerSec / 5f);
 
                     if (motionFactor > 0.01f) {
                         float dot =
@@ -230,7 +235,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                                     (float)Math.toDegrees(Math.acos(cosTheta));
 
                             float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
-                            final float DRIFT_RECOVERY_TRIGGER_DEG = 2.5f;
+                            final float DRIFT_RECOVERY_TRIGGER_DEG = 1.5f;
                             final float REFERENCE_RECOVERY_WINDOW_DEG = 7.5f;
                             float proximityWeight = 0f;
 
@@ -243,7 +248,7 @@ public class MainActivity extends Activity implements SensorEventListener {
 
                             // Slow correction when nearly still; gentler still when moving.
                             // dt-based scaling keeps the response similar across sensor rates.
-                            float settlingRate = turnSpeedDegPerSec < 1f ? 0.060f : 0.018f;
+                            float settlingRate = turnSpeedDegPerSec < 1f ? 0.080f : 0.030f;
                             zeroCorrectionOffset += currentError *
                                     proximityWeight * motionFactor * settlingRate * (dt * 60f);
                         }
