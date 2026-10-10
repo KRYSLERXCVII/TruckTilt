@@ -1145,12 +1145,15 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         static float brakeResponse(float v) {
             v = clamp(v, 0f, 1f);
-            return (float)Math.pow(v, 1.70);
+            // More progressive brake: finer control in the first half,
+            // reaching full braking only at full pedal travel.
+            return (float)Math.pow(v, 2.20);
         }
 
         static float throttleResponse(float v) {
             v = clamp(v, 0f, 1f);
-            return (float)Math.pow(v, 1.35);
+            // More progressive throttle: reduces early acceleration buildup.
+            return (float)Math.pow(v, 1.80);
         }
 
         void setPedal(String s,float v){
