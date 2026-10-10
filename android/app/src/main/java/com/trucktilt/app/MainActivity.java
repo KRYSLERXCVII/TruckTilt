@@ -24,8 +24,9 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * TruckTilt v1.0.1 — Pure Hardware Quaternion Steering Engine.
- * ZERO auto-zero corrections, ZERO snapping, ZERO drift pulling.
+ * TruckTilt v1.0.3 — Absolute Quaternion Hardware Tracking Engine.
+ * Replaced gyro integration with direct 3D orientation matrix transforms.
+ * ZERO snapping, ZERO auto-zero pulling, and ZERO drift accumulation.
  */
 public class MainActivity extends Activity implements SensorEventListener {
     static final int PORT = 45454;
@@ -34,16 +35,17 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     ControllerView view;
     SensorManager sensors;
-    Sensor gameRotationSensor;
+    Sensor gameRotationSensor, accel;
 
-    float gyroAngle = 0f;
+    float gyroAngle = 0f, tiltAngle = 0f;
 
-    // Hardware Quaternion Tracking
+    // Absolute Hardware Quaternion Matrix Tracking
     private final float[] currentRotationMatrix = new float[16];
     private final float[] refRotationMatrix = new float[16];
     private final float[] invRefRotationMatrix = new float[16];
     private final float[] relativeRotationMatrix = new float[16];
     private final float[] orientationAngles = new float[3];
+    private final float[] currentGravity = new float[3];
 
     private boolean isCalibrated = false;
 
@@ -86,13 +88,15 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
 
         sensors = (SensorManager)getSystemService(SENSOR_SERVICE);
-        // Fallback to TYPE_ROTATION_VECTOR if GAME_ROTATION_VECTOR is unavailable
+        accel = sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+        
+        // Priority to TYPE_GAME_ROTATION_VECTOR (no uncalibrated magnetic noise)
         gameRotationSensor = sensors.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
         if (gameRotationSensor == null) {
             gameRotationSensor = sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
         }
 
-        // Initialize identity matrices
+        // Pre-initialize reference matrices
         SensorManager.getRotationMatrixFromVector(refRotationMatrix, new float[]{0, 0, 0, 1});
         Matrix.transposeM(invRefRotationMatrix, 0, refRotationMatrix, 0);
 
@@ -120,9 +124,8 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     @Override protected void onResume() {
         super.onResume();
-        if (gameRotationSensor != null) {
-            sensors.registerListener(this, gameRotationSensor, SensorManager.SENSOR_DELAY_GAME);
-        }
+        if (gameRotationSensor != null) sensors.registerListener(this, gameRotationSensor, SensorManager.SENSOR_DELAY_GAME);
+        if (accel != null) sensors.registerListener(this, accel, SensorManager.SENSOR_DELAY_GAME);
     }
 
     @Override protected void onPause() {
@@ -141,34 +144,44 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     @Override public void onSensorChanged(SensorEvent e) {
-        if (e.sensor.getType() == Sensor.TYPE_GAME_ROTATION_VECTOR || 
-            e.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR) {
+        if (e.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
+            currentGravity[0] = currentGravity[0] * 0.90f + e.values[0] * 0.10f;
+            currentGravity[1] = currentGravity[1] * 0.90f + e.values[1] * 0.10f;
+            currentGravity[2] = currentGravity[2] * 0.90f + e.values[2] * 0.10f;
 
-            // 1. Convert rotation vector event into 4x4 orientation matrix
+            float norm = (float)Math.sqrt(currentGravity[0]*currentGravity[0] + currentGravity[1]*currentGravity[1] + currentGravity[2]*currentGravity[2]);
+            if (norm > 0) {
+                float pitch = (float)Math.toDegrees(Math.asin(clamp(currentGravity[1]/norm, -1f, 1f)));
+                tiltAngle = clamp(pitch, -45f, 45f);
+            }
+        } 
+        else if (e.sensor.getType() == Sensor.TYPE_GAME_ROTATION_VECTOR || 
+                 e.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR) {
+
+            // 1. Convert current quaternion pose into 4x4 orientation matrix
             SensorManager.getRotationMatrixFromVector(currentRotationMatrix, e.values);
 
-            // 2. Initial calibration lock on startup
+            // 2. Lock relative origin matrix on initial calibration
             if (!isCalibrated) {
                 System.arraycopy(currentRotationMatrix, 0, refRotationMatrix, 0, 16);
                 Matrix.transposeM(invRefRotationMatrix, 0, refRotationMatrix, 0);
                 isCalibrated = true;
             }
 
-            // 3. Compute relative orientation: R_rel = R_current * R_ref_inv (using Transpose for Orthogonal Matrices)
+            // 3. Compute exact relative matrix offset (R_rel = R_current * R_ref_transpose)
             Matrix.multiplyMM(relativeRotationMatrix, 0, currentRotationMatrix, 0, invRefRotationMatrix, 0);
 
-            // 4. Extract orientation angles (azimuth, pitch, roll in radians)
+            // 4. Extract Euler orientation angles from relative transformation matrix
             SensorManager.getOrientation(relativeRotationMatrix, orientationAngles);
 
-            // 5. Extract Z-axis landscape rotation cleanly (Roll in landscape)
+            // 5. Extract Z-axis landscape roll degrees
             float rollDegrees = (float) Math.toDegrees(orientationAngles[2]);
 
             // Clamp output based on selected range (e.g. 900°, 1080°)
             float halfRange = view == null ? 450f : view.rangeDeg / 2f;
             gyroAngle = clamp(rollDegrees, -halfRange, halfRange);
-
-            if (view != null) view.invalidate();
         }
+        if (view != null) view.invalidate();
     }
 
     @Override public void onAccuracyChanged(Sensor s, int a) {}
@@ -223,6 +236,16 @@ public class MainActivity extends Activity implements SensorEventListener {
         });
     }
 
+    void vibrateOneShot(long durationMs, int amplitude) {
+        if (vibrator == null || !vibrator.hasVibrator()) return;
+        if (Build.VERSION.SDK_INT >= 26) {
+            int a = Math.max(1, Math.min(255, amplitude));
+            vibrator.vibrate(VibrationEffect.createOneShot(durationMs, a));
+        } else {
+            vibrator.vibrate(durationMs);
+        }
+    }
+
     void vibrateWaveform(long[] timings, int[] amplitudes, int repeat) {
         if (vibrator == null || !vibrator.hasVibrator()) return;
         if (Build.VERSION.SDK_INT >= 26) {
@@ -252,6 +275,10 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
     }
 
+    void startOffRoadRumble() { startAdaptiveRumble(55); }
+
+    void stopOffRoadRumble() { stopAdaptiveRumble(); }
+
     int getBatteryPercent() {
         return batteryPercent;
     }
@@ -264,6 +291,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     void calibrate() {
+        // Absolute Orientation Offset Snapshot
         System.arraycopy(currentRotationMatrix, 0, refRotationMatrix, 0, 16);
         Matrix.transposeM(invRefRotationMatrix, 0, refRotationMatrix, 0);
         isCalibrated = true;
@@ -275,6 +303,12 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     static float clamp(float v, float a, float b) { return Math.max(a, Math.min(b, v)); }
+
+    static float normalizeDelta(float d) {
+        while (d > 180f) d -= 360f;
+        while (d < -180f) d += 360f;
+        return d;
+    }
 
     class ControllerView extends View {
         final Paint p = new Paint(3);
@@ -291,9 +325,12 @@ public class MainActivity extends Activity implements SensorEventListener {
         int editPointerId = -1;
         float editStartX = 0f, editStartY = 0f;
         final RectF editStartRect = new RectF();
+        float editOffsetX = 0f, editOffsetY = 0f;
 
         float steer = 0f, throttle = 0f, brake = 0f, clutch = 0f, retarder = 0f;
-        float wheelAngleDeg = 0f;
+        float wheelTouchStartAngle = 0f, wheelStartAngleDeg = 0f, wheelAngleDeg = 0f;
+        float wheelLastAngle = 0f;
+        boolean wheelDragging = false;
 
         final Object cameraSync = new Object();
         float cameraDx = 0f, cameraDy = 0f;
@@ -354,7 +391,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                         : Color.WHITE;
                 text(c, "BAT " + battery + "%", w - 305, 36, 13, batteryColor, Paint.Align.RIGHT);
             }
-            text(c,"by KRYSLERXCVII  •  v1.0.1",136,37,15,Color.rgb(205,212,220),Paint.Align.LEFT);
+            text(c,"by KRYSLERXCVII  •  v1.0.3",136,37,15,Color.rgb(205,212,220),Paint.Align.LEFT);
 
             donateButton(c,"DONATE",w-82,29,132,38);
 
@@ -456,7 +493,7 @@ public class MainActivity extends Activity implements SensorEventListener {
             drawPedal(c,"CLUTCH",px1,h*.84f,pw*.88f,62,clutch);
             drawPedal(c,"RETARDER",px2,h*.84f,pw*.88f,62,retarder);
 
-            String modeText=mode==0?"HARDWARE GYRO":"VIRTUAL WHEEL";
+            String modeText=mode==0?"GYRO WHEEL":mode==1?"GYRO TILT":"VIRTUAL WHEEL";
             text(c,modeText,wheelCx,wheelCy+8,14,Color.LTGRAY,Paint.Align.CENTER);
             text(c,String.format(Locale.US,"%+.0f° / %d°",currentSteeringDegrees(),rangeDeg),
                     wheelCx,wheelCy+36,15,Color.rgb(139,195,74),Paint.Align.CENTER);
@@ -469,7 +506,9 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
 
         float currentSteeringDegrees() {
-            return mode==0 ? gyroAngle : wheelAngleDeg;
+            if(mode==0) return gyroAngle;
+            if(mode==1) return (tiltAngle/45f)*(rangeDeg/2f);
+            return wheelAngleDeg;
         }
 
         void drawWheel(Canvas c,float cx,float cy,float r) {
@@ -616,6 +655,8 @@ public class MainActivity extends Activity implements SensorEventListener {
                         editStartX=x;
                         editStartY=y;
                         editResizing=isResizeHandle(r,x,y);
+                        editOffsetX=x-r.centerX();
+                        editOffsetY=y-r.centerY();
                         invalidate();
                     } else {
                         editKey=null;
@@ -627,9 +668,18 @@ public class MainActivity extends Activity implements SensorEventListener {
                 }
 
                 if(hit("DONATE",x,y)){ openDonate(); return true; }
-                if(hit("MODE",x,y)){ mode=(mode+1)%2; invalidate(); return true; }
+                if(hit("MODE",x,y)){ mode=(mode+1)%3; invalidate(); return true; }
                 if(hit(rangeDeg+"°",x,y)){ cycleRange(); invalidate(); return true; }
                 if(hit("CALIBRATE",x,y)){ calibrate(); return true; }
+
+                if(wheelRect.contains(x,y) && wheelPointerId==-1) {
+                    wheelReturning=false;
+                    wheelPointerId=pointerId; wheelDragging=true;
+                    wheelTouchStartAngle=angleFromCenter(x,y);
+                    wheelLastAngle=wheelTouchStartAngle;
+                    wheelStartAngleDeg=wheelAngleDeg;
+                    return true;
+                }
 
                 if(hit("CAMERA_PAD",x,y) && cameraPointerId==-1) {
                     cameraPointerId=pointerId;
@@ -716,6 +766,24 @@ public class MainActivity extends Activity implements SensorEventListener {
                 }
             }
 
+            if(action==MotionEvent.ACTION_MOVE && wheelDragging && wheelPointerId>=0) {
+                int idx=e.findPointerIndex(wheelPointerId);
+                if(idx>=0) {
+                    float a=angleFromCenter(e.getX(idx),e.getY(idx));
+                    float delta=normalizeDelta(a-wheelLastAngle);
+                    wheelLastAngle=a;
+
+                    float maxAngle=rangeDeg/2f;
+                    wheelAngleDeg=clamp(
+                            wheelAngleDeg + delta*(rangeDeg/360f),
+                            -maxAngle,
+                            maxAngle
+                    );
+                    steer=clamp(wheelAngleDeg/maxAngle,-1f,1f);
+                    invalidate();
+                }
+            }
+
             if(action==MotionEvent.ACTION_MOVE && cameraDragging && cameraPointerId>=0) {
                 int idx=e.findPointerIndex(cameraPointerId);
                 if(idx>=0) {
@@ -737,6 +805,11 @@ public class MainActivity extends Activity implements SensorEventListener {
                 String pc=pointerControls.remove(pointerId);
                 if(pc!=null && pc.startsWith("B")) {
                     int i=Integer.parseInt(pc.substring(1)); buttons[i]=false;
+                }
+                if(pointerId==wheelPointerId){
+                    wheelPointerId=-1;
+                    wheelDragging=false;
+                    startWheelReturn();
                 }
                 if(pointerId==cameraPointerId){
                     long duration=System.currentTimeMillis()-cameraTapStartMs;
@@ -837,6 +910,38 @@ public class MainActivity extends Activity implements SensorEventListener {
             }
         }
 
+        void startWheelReturn(){
+            if(Math.abs(wheelAngleDeg) < 0.5f){
+                wheelAngleDeg=0f;
+                steer=0f;
+                wheelReturning=false;
+                invalidate();
+                return;
+            }
+
+            wheelReturning=true;
+
+            postOnAnimation(new Runnable(){
+                @Override public void run(){
+                    if(!wheelReturning || wheelDragging) return;
+
+                    wheelAngleDeg *= 0.78f;
+
+                    if(Math.abs(wheelAngleDeg) < 0.5f){
+                        wheelAngleDeg=0f;
+                        steer=0f;
+                        wheelReturning=false;
+                        invalidate();
+                        return;
+                    }
+
+                    steer=clamp(wheelAngleDeg/(rangeDeg/2f),-1f,1f);
+                    invalidate();
+                    postOnAnimation(this);
+                }
+            });
+        }
+
         boolean hit(String key,float x,float y){ RectF r=controls.get(key); return r!=null&&r.contains(x,y); }
         String pedalAt(float x,float y){
             for(String s:new String[]{"CLUTCH","BRAKE","THROTTLE","RETARDER"}) if(hit("P_"+s,x,y)) return s;
@@ -887,6 +992,8 @@ public class MainActivity extends Activity implements SensorEventListener {
             gyroAngle=clamp(gyroAngle,-rangeDeg/2f,rangeDeg/2f);
             wheelAngleDeg=clamp(wheelAngleDeg,-rangeDeg/2f,rangeDeg/2f);
         }
+        float angleFromCenter(float x,float y){ return (float)Math.toDegrees(Math.atan2(y-wheelRect.centerY(),x-wheelRect.centerX())); }
+        float normalizeDelta(float d){ while(d>180)d-=360; while(d<-180)d+=360; return d; }
     }
 
     class UdpClient {
@@ -942,6 +1049,7 @@ public class MainActivity extends Activity implements SensorEventListener {
             if(!connected||host==null)return;
             float s;
             if(v.mode==0)s=clamp(gyroAngle/(v.rangeDeg/2f),-1f,1f);
+            else if(v.mode==1)s=clamp(tiltAngle/45f,-1f,1f);
             else s=clamp(v.wheelAngleDeg/(v.rangeDeg/2f),-1f,1f);
             v.steer=s;
             long seq=++sequence, ts=System.currentTimeMillis();
