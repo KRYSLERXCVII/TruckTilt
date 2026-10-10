@@ -199,51 +199,51 @@ public class MainActivity extends Activity implements SensorEventListener {
 
                 rawGyroIntegratedDeg += filteredGyroRateDegPerSec * dt;
 
-                // Reliable soft return-to-reference recovery:
-                // keep the hybrid gyro steering response, but remove the narrow hard gates
-                // that could leave a residual angle uncorrected. Recovery fades in over a
-                // wider physical-reference zone and still slows down during active steering.
+                // Soft return-to-reference recovery:
+                // retain the filtered gyro response, but gently correct accumulated
+                // angle error when the phone comes back near its calibrated physical zone.
+                // A modest trigger avoids pulling every small intentional steering input
+                // toward zero; a slower gain prevents the abrupt snap of the older build.
                 if (calibrationGravity != null && currentGravity != null
                         && gravityMagnitudePlausible) {
                     float turnSpeedDegPerSec = Math.abs(correctedRate);
-                    // Do not abruptly disable recovery at 3 deg/s; taper it more gradually.
-                    float motionFactor = Math.max(0f, 1f - turnSpeedDegPerSec / 5f);
+                    float motionFactor = Math.max(0f, 1f - turnSpeedDegPerSec / 3f);
 
-                    float dot =
-                            calibrationGravity[0] * currentGravity[0] +
-                            calibrationGravity[1] * currentGravity[1] +
-                            calibrationGravity[2] * currentGravity[2];
+                    if (motionFactor > 0.01f) {
+                        float dot =
+                                calibrationGravity[0] * currentGravity[0] +
+                                calibrationGravity[1] * currentGravity[1] +
+                                calibrationGravity[2] * currentGravity[2];
 
-                    float normCalib = (float)Math.sqrt(
-                            calibrationGravity[0] * calibrationGravity[0] +
-                            calibrationGravity[1] * calibrationGravity[1] +
-                            calibrationGravity[2] * calibrationGravity[2]);
-                    float normCurr = accelNorm;
+                        float normCalib = (float)Math.sqrt(
+                                calibrationGravity[0] * calibrationGravity[0] +
+                                calibrationGravity[1] * calibrationGravity[1] +
+                                calibrationGravity[2] * calibrationGravity[2]);
+                        float normCurr = accelNorm;
 
-                    if (normCalib > 0f && normCurr > 0f) {
-                        float cosTheta = clamp(dot / (normCalib * normCurr), -1f, 1f);
-                        float referenceDeviationDeg =
-                                (float)Math.toDegrees(Math.acos(cosTheta));
+                        if (normCalib > 0f && normCurr > 0f) {
+                            float cosTheta = clamp(dot / (normCalib * normCurr), -1f, 1f);
+                            float referenceDeviationDeg =
+                                    (float)Math.toDegrees(Math.acos(cosTheta));
 
-                        float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
-                        final float DRIFT_RECOVERY_TRIGGER_DEG = 1.0f;
-                        final float REFERENCE_RECOVERY_WINDOW_DEG = 10.0f;
-                        float proximityWeight = 0f;
+                            float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
+                            final float DRIFT_RECOVERY_TRIGGER_DEG = 2.5f;
+                            final float REFERENCE_RECOVERY_WINDOW_DEG = 7.5f;
+                            float proximityWeight = 0f;
 
-                        if (Math.abs(currentError) > DRIFT_RECOVERY_TRIGGER_DEG
-                                && referenceDeviationDeg < REFERENCE_RECOVERY_WINDOW_DEG) {
-                            float closeness = 1f -
-                                    referenceDeviationDeg / REFERENCE_RECOVERY_WINDOW_DEG;
-                            // Smooth quadratic fade: correction becomes stronger near the
-                            // calibrated physical position without a sudden on/off edge.
-                            proximityWeight = closeness * closeness;
+                            if (Math.abs(currentError) > DRIFT_RECOVERY_TRIGGER_DEG
+                                    && referenceDeviationDeg < REFERENCE_RECOVERY_WINDOW_DEG) {
+                                float closeness = 1f -
+                                        referenceDeviationDeg / REFERENCE_RECOVERY_WINDOW_DEG;
+                                proximityWeight = closeness * closeness;
+                            }
+
+                            // Slow correction when nearly still; gentler still when moving.
+                            // dt-based scaling keeps the response similar across sensor rates.
+                            float settlingRate = turnSpeedDegPerSec < 1f ? 0.060f : 0.018f;
+                            zeroCorrectionOffset += currentError *
+                                    proximityWeight * motionFactor * settlingRate * (dt * 60f);
                         }
-
-                        // Keep the hybrid's familiar gentle settling, with reduced gain
-                        // during motion so recovery does not feel like an abrupt self-centering snap.
-                        float settlingRate = turnSpeedDegPerSec < 1f ? 0.055f : 0.015f;
-                        zeroCorrectionOffset += currentError *
-                                proximityWeight * motionFactor * settlingRate * (dt * 60f);
                     }
                 }
 
