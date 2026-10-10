@@ -530,11 +530,11 @@ public class MainActivity extends Activity implements SensorEventListener {
                 float rpmRatio = telemetryRpmMax > 100f
                         ? clamp(telemetryRpm / telemetryRpmMax, 0f, 1f) : 0f;
                 p.setColor(Color.rgb(40, 46, 50));
-                c.drawRoundRect(new RectF(w - 140f, h - 24f, w - 32f, h - 19f), 3f, 3f, p);
+                c.drawRoundRect(new RectF(w - 140f, h - 30f, w - 32f, h - 25f), 3f, 3f, p);
                 p.setColor(rpmRatio >= 0.86f ? Color.rgb(255, 190, 55)
                         : rpmRatio >= 0.70f ? Color.rgb(100, 190, 255) : Color.rgb(139, 195, 74));
-                c.drawRoundRect(new RectF(w - 140f, h - 24f,
-                        w - 140f + 108f * rpmRatio, h - 19f), 3f, 3f, p);
+                c.drawRoundRect(new RectF(w - 140f, h - 30f,
+                        w - 140f + 108f * rpmRatio, h - 25f), 3f, 3f, p);
             }
 
             // Racing-style telemetry shift prompt in the top-center header area.
