@@ -85,6 +85,8 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         hapticsEnabled = getSharedPreferences("trucktilt_settings", MODE_PRIVATE)
                 .getBoolean("haptics_enabled", true);
+        // Restore the last manually calibrated gravity reference across app restarts.
+        loadCalibrationReference();
         if (Build.VERSION.SDK_INT >= 31) {
             VibratorManager vm = (VibratorManager)getSystemService(VIBRATOR_MANAGER_SERVICE);
             vibrator = vm.getDefaultVibrator();
@@ -376,6 +378,28 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
     }
 
+    void loadCalibrationReference() {
+        android.content.SharedPreferences prefs =
+                getSharedPreferences("trucktilt_calibration", MODE_PRIVATE);
+        if (prefs.getBoolean("reference_saved", false)) {
+            calibrationGravity = new float[] {
+                    prefs.getFloat("gravity_x", 0f),
+                    prefs.getFloat("gravity_y", 0f),
+                    prefs.getFloat("gravity_z", 0f)
+            };
+        }
+    }
+
+    void saveCalibrationReference(float[] gravity) {
+        if (gravity == null || gravity.length < 3) return;
+        getSharedPreferences("trucktilt_calibration", MODE_PRIVATE).edit()
+                .putBoolean("reference_saved", true)
+                .putFloat("gravity_x", gravity[0])
+                .putFloat("gravity_y", gravity[1])
+                .putFloat("gravity_z", gravity[2])
+                .apply();
+    }
+
     void calibrate() {
         // Rebase steering to zero without an instantaneous jump in the displayed
         // wheel. The offset fades out smoothly while new gyro motion is integrated.
@@ -390,6 +414,8 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         if (currentGravity != null) {
             calibrationGravity = currentGravity.clone();
+            // Keep this reference until the user presses Calibrate again.
+            saveCalibrationReference(calibrationGravity);
         }
 
         if (view != null) {
