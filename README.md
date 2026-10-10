@@ -73,6 +73,4 @@ Support is optional and does not affect the controller functionality.
 
 TruckTilt currently has a working Android cockpit, Windows host, Wi-Fi/UDP communication, virtual controller output, steering/pedal controls, camera touchpad, and customizable cockpit layout.
 
-The project is continuing toward a polished, community-friendly mobile controller for truck simulators.
-
 If the repository is intended to be open source, a standard license such as MIT can be added as a separate `LICENSE` file.
