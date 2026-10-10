@@ -222,24 +222,30 @@ public class MainActivity extends Activity implements SensorEventListener {
 
                         if (normCalib > 0f && normCurr > 0f) {
                             float cosTheta = clamp(dot / (normCalib * normCurr), -1f, 1f);
-                            // Only correct when the phone is genuinely back at the
-                            // calibrated physical orientation. The old cos^32 curve
-                            // was still strong at 3-5 degrees and pulled intentional
-                            // small steering inputs back toward zero.
                             float referenceDeviationDeg =
                                     (float)Math.toDegrees(Math.acos(cosTheta));
-                            final float REFERENCE_DEADBAND_DEG = 1.5f;
+
+                            // Recovery mode is only allowed when the gyro's accumulated
+                            // angle is clearly inconsistent with the phone's physical
+                            // orientation. This keeps normal 3-5 degree steering inputs
+                            // untouched, while allowing larger accumulated drift to be
+                            // corrected when the phone returns close to its calibrated pose.
+                            float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
+                            final float DRIFT_RECOVERY_TRIGGER_DEG = 7.0f;
+                            final float REFERENCE_RECOVERY_WINDOW_DEG = 5.0f;
                             float proximityWeight = 0f;
-                            if (referenceDeviationDeg < REFERENCE_DEADBAND_DEG) {
+
+                            if (Math.abs(currentError) > DRIFT_RECOVERY_TRIGGER_DEG
+                                    && referenceDeviationDeg < REFERENCE_RECOVERY_WINDOW_DEG) {
                                 float closeness = 1f -
-                                        referenceDeviationDeg / REFERENCE_DEADBAND_DEG;
+                                        referenceDeviationDeg / REFERENCE_RECOVERY_WINDOW_DEG;
                                 proximityWeight = closeness * closeness;
                             }
 
-                            // Correct promptly once near the reference and nearly
-                            // stopped, but do not counter-steer while the phone moves.
-                            float settlingRate = turnSpeedDegPerSec < 1f ? 0.22f : 0.03f;
-                            float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
+                            // Recover faster when nearly stopped at the reference pose;
+                            // the accumulated-angle threshold prevents the correction from
+                            // pulling ordinary small-angle steering back toward zero.
+                            float settlingRate = turnSpeedDegPerSec < 1f ? 0.20f : 0.03f;
                             zeroCorrectionOffset += currentError *
                                     proximityWeight * motionFactor * settlingRate * (dt * 60f);
                         }
