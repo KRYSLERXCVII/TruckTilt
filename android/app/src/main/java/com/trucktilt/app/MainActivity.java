@@ -665,7 +665,7 @@ public class MainActivity extends Activity implements SensorEventListener {
             drawMappedButton(c,12,px2,h*.86f,pw*.88f,controlH); // RETARDER-
 
             drawPedal(c,"CLUTCH",px1,h*.84f,pw*.88f,62,clutch);
-            drawPedal(c,"RETARDER",px2,h*.84f,pw*.88f,62,retarder);
+            drawPedal(c,"RETARDER",px2,h*.93f,pw*.88f,62,retarder); // Moved below RETARDER- to prevent overlap
 
             String modeText=mode==0?"GYRO WHEEL":mode==1?"GYRO TILT":"VIRTUAL WHEEL";
             text(c,modeText,wheelCx,wheelCy+8,14,Color.LTGRAY,Paint.Align.CENTER);
