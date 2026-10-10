@@ -41,6 +41,10 @@ public class MainActivity extends Activity implements SensorEventListener {
     float[] calibrationGravity = null;
     float[] currentGravity = null;
     float rawGyroIntegratedDeg = 0f;
+    // Slowly removes accumulated gyro drift when the phone returns to its
+    // calibrated physical orientation. The gyro filter remains responsible
+    // for smooth steering; this offset only corrects the accumulated error.
+    float zeroCorrectionOffset = 0f;
     float gyroBiasDegPerSec = 0f;
     float filteredGyroRateDegPerSec = 0f;
     boolean gyroRateFilterInitialized = false;
@@ -49,17 +53,6 @@ public class MainActivity extends Activity implements SensorEventListener {
     float calibrationFadeOffsetDeg = 0f;
     long calibrationFadeStartNs = 0L;
     static final long CALIBRATION_FADE_NS = 250_000_000L;
-
-    // Fixed-reference "lane keeping": use gravity's direction in the phone's
-    // screen plane to correct only modulo-360 gyro drift while truly stationary.
-    // This never changes calibrationGravity and never removes accumulated full turns.
-    long referenceStillSinceNs = 0L;
-    static final long REFERENCE_SETTLE_NS = 350_000_000L;
-    static final float REFERENCE_MIN_XY_G = 4.5f;
-    static final float REFERENCE_MAX_Z_DIFFERENCE = 2.0f;
-    static final float REFERENCE_MAX_ERROR_DEG = 45.0f;
-    static final float REFERENCE_CORRECTION_DEG_PER_SEC = 12.0f;
-    static final float REFERENCE_CORRECTION_TIME_SEC = 0.45f;
 
     UdpClient net;
     volatile int batteryPercent = -1;
@@ -206,58 +199,40 @@ public class MainActivity extends Activity implements SensorEventListener {
 
                 rawGyroIntegratedDeg += filteredGyroRateDegPerSec * dt;
 
-                // Keep the integrated angle in a fixed calibrated reference lane.
-                // Gravity provides a modulo-360 orientation cue around the phone's
-                // Z axis when gravity has a strong projection into the screen plane.
-                // Only apply it after the phone has settled; never alter the saved
-                // calibration reference and never change the accumulated turn count.
-                boolean referenceUsable = calibrationGravity != null
-                        && currentGravity != null
-                        && accelNorm >= 8.0f && accelNorm <= 11.5f;
+                // Return-to-reference correction from the original build:
+                // when the phone is close to its calibrated gravity orientation,
+                // gently absorb accumulated integration error. It is disabled
+                // during fast turns so it does not fight intentional steering.
+                if (calibrationGravity != null && currentGravity != null
+                        && gravityMagnitudePlausible) {
+                    float turnSpeedDegPerSec = Math.abs(correctedRate);
+                    float motionFactor = Math.max(0f, 1f - turnSpeedDegPerSec / 3f);
 
-                if (referenceUsable) {
-                    float baseXY = (float)Math.sqrt(
-                            calibrationGravity[0] * calibrationGravity[0] +
-                            calibrationGravity[1] * calibrationGravity[1]);
-                    float currentXY = (float)Math.sqrt(
-                            currentGravity[0] * currentGravity[0] +
-                            currentGravity[1] * currentGravity[1]);
+                    if (motionFactor > 0.01f) {
+                        float dot =
+                                calibrationGravity[0] * currentGravity[0] +
+                                calibrationGravity[1] * currentGravity[1] +
+                                calibrationGravity[2] * currentGravity[2];
 
-                    referenceUsable = baseXY >= REFERENCE_MIN_XY_G
-                            && currentXY >= REFERENCE_MIN_XY_G
-                            && Math.abs(currentGravity[2] - calibrationGravity[2])
-                                    <= REFERENCE_MAX_Z_DIFFERENCE;
-                }
+                        float normCalib = (float)Math.sqrt(
+                                calibrationGravity[0] * calibrationGravity[0] +
+                                calibrationGravity[1] * calibrationGravity[1] +
+                                calibrationGravity[2] * calibrationGravity[2]);
+                        float normCurr = accelNorm;
 
-                if (referenceUsable && nearlyStill) {
-                    if (referenceStillSinceNs == 0L) referenceStillSinceNs = e.timestamp;
+                        if (normCalib > 0f && normCurr > 0f) {
+                            float cosTheta = clamp(dot / (normCalib * normCurr), -1f, 1f);
+                            // A tight proximity curve avoids pulling the wheel
+                            // toward zero while the phone is meaningfully turned.
+                            float proximityWeight =
+                                    (float)Math.pow(Math.max(0f, cosTheta), 32.0);
 
-                    if (e.timestamp - referenceStillSinceNs >= REFERENCE_SETTLE_NS) {
-                        float baseGravityAngle = (float)Math.toDegrees(
-                                Math.atan2(calibrationGravity[1], calibrationGravity[0]));
-                        float currentGravityAngle = (float)Math.toDegrees(
-                                Math.atan2(currentGravity[1], currentGravity[0]));
-
-                        float referenceAngle = normalizeDelta(
-                                currentGravityAngle - baseGravityAngle);
-                        float integratedModulo = normalizeDelta(rawGyroIntegratedDeg);
-                        float referenceError = normalizeDelta(referenceAngle - integratedModulo);
-
-                        // Large mismatches are more likely to be a change in phone
-                        // tilt or an unreliable gravity projection than small gyro
-                        // drift. Ignore them rather than pulling the wheel suddenly.
-                        if (Math.abs(referenceError) <= REFERENCE_MAX_ERROR_DEG) {
-                            float requestedCorrection =
-                                    referenceError * dt / REFERENCE_CORRECTION_TIME_SEC;
-                            float maxCorrection =
-                                    REFERENCE_CORRECTION_DEG_PER_SEC * dt;
-                            float correction = clamp(
-                                    requestedCorrection, -maxCorrection, maxCorrection);
-                            rawGyroIntegratedDeg += correction;
+                            float settlingRate = turnSpeedDegPerSec < 1f ? 0.15f : 0.03f;
+                            float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
+                            zeroCorrectionOffset += currentError *
+                                    proximityWeight * motionFactor * settlingRate * (dt * 60f);
                         }
                     }
-                } else {
-                    referenceStillSinceNs = 0L;
                 }
 
                 // Smoothly fade the calibration offset over 250 ms. This preserves
@@ -277,7 +252,8 @@ public class MainActivity extends Activity implements SensorEventListener {
                 float outputOffset = calibrationFadeStartNs == 0L
                         ? calibrationFadeOffsetDeg : calibrationFadeOffsetDeg * (1f - fade);
                 float half = view == null ? 450f : view.rangeDeg / 2f;
-                gyroAngle = clamp(rawGyroIntegratedDeg + outputOffset, -half, half);
+                gyroAngle = clamp(rawGyroIntegratedDeg - zeroCorrectionOffset + outputOffset,
+                        -half, half);
             }
         }
         if (view != null) view.invalidate();
@@ -395,11 +371,11 @@ public class MainActivity extends Activity implements SensorEventListener {
         calibrationFadeOffsetDeg = gyroAngle;
         calibrationFadeStartNs = android.os.SystemClock.elapsedRealtimeNanos();
         rawGyroIntegratedDeg = 0f;
+        zeroCorrectionOffset = 0f;
         filteredGyroRateDegPerSec = 0f;
         gyroRateFilterInitialized = false;
         lastGyroNs = 0L;
         stationarySinceNs = 0L;
-        referenceStillSinceNs = 0L;
 
         if (currentGravity != null) {
             calibrationGravity = currentGravity.clone();
