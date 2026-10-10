@@ -545,11 +545,15 @@ public class MainActivity extends Activity implements SensorEventListener {
                         ? clamp(telemetryRpm / telemetryRpmMax, 0f, 1f) : 0f;
                 // Use a visible text status at all times while telemetry is active.
                 // Shift prompts use wider RPM bands so they are easier to notice.
-                boolean shiftUp = telemetryRpmMax > 100f && telemetryGear > 0
-                        && telemetryGearCount > 0 && telemetryGear < telemetryGearCount
-                        && rpmRatio >= 0.78f;
-                boolean shiftDown = telemetryRpmMax > 100f && telemetryGear > 1
-                        && rpmRatio <= 0.25f;
+                // Do not suppress shift-up hints when the host omits gear count.
+                // Use wider thresholds so prompts are visible during play.
+                boolean hasRpmRange = telemetryRpmMax > 100f;
+                boolean hasMoreGears = telemetryGearCount <= 0
+                        || telemetryGear < telemetryGearCount;
+                boolean shiftUp = hasRpmRange && telemetryGear > 0
+                        && hasMoreGears && rpmRatio >= 0.65f;
+                boolean shiftDown = hasRpmRange && telemetryGear > 1
+                        && rpmRatio <= 0.30f;
                 String gearLabel = telemetryGear < 0 ? "R" : telemetryGear == 0 ? "N" : String.valueOf(telemetryGear);
                 int gearColor = shiftUp ? Color.rgb(255,190,55)
                         : shiftDown ? Color.rgb(100,190,255) : Color.WHITE;
