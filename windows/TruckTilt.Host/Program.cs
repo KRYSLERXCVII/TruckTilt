@@ -1,4 +1,5 @@
-using System.Diagnostics;\nusing System.Net;
+using System.Diagnostics;
+using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using TruckTilt.Host;
