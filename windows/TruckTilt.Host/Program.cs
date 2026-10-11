@@ -96,7 +96,10 @@ _ = Task.Run(async () =>
             }
             else if (message.Equals("KEY|1", StringComparison.OrdinalIgnoreCase))
             {
-                InteriorCameraKey.SendKey1ToGame();
+                bool sent = InteriorCameraKey.SendKey1ToGame();
+                Console.WriteLine(sent
+                    ? "Interior camera: sent keyboard 1 to the foreground game."
+                    : "Interior camera: ignored; bring ETS2 or ATS to the foreground first.");
             }
             else if (message.StartsWith("CAMERA|", StringComparison.OrdinalIgnoreCase))
             {
@@ -208,29 +211,31 @@ static class InteriorCameraKey
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
 
-    public static void SendKey1ToGame()
+    public static bool SendKey1ToGame()
     {
         IntPtr hwnd = GetForegroundWindow();
         if (hwnd == IntPtr.Zero)
-            return;
+            return false;
 
         GetWindowThreadProcessId(hwnd, out uint pid);
         if (pid == 0)
-            return;
+            return false;
 
         try
         {
             string name = Process.GetProcessById((int)pid).ProcessName;
             if (!name.Equals("eurotrucks2", StringComparison.OrdinalIgnoreCase) &&
                 !name.Equals("amtrucks", StringComparison.OrdinalIgnoreCase))
-                return;
+                return false;
 
             keybd_event(Vk1, 0, 0, UIntPtr.Zero);
             keybd_event(Vk1, 0, KeyEventKeyUp, UIntPtr.Zero);
+            return true;
         }
         catch
         {
             // Ignore if the game closes between the focus check and key send.
+            return false;
         }
     }
 }
