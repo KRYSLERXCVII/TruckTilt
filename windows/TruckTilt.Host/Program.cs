@@ -13,13 +13,11 @@ Console.WriteLine("================================================");
 Console.WriteLine($"Listening for TruckTilt phones on UDP {Port}");
 Console.WriteLine("Device: TruckTilt Virtual Steering Wheel (DirectInput/HID)");
 Console.WriteLine("Axes: Steering / Throttle / Brake / Clutch / Retarder");
-Console.WriteLine("Buttons: 32 independent DirectInput wheel buttons");
-Console.WriteLine("Interior CAM: separate virtual Xbox controller START button (configurable in-game)");
+Console.WriteLine("Buttons: 33 independent HID buttons (INTERIOR CAM is button 33)");
 Console.WriteLine("Press Ctrl+C to exit.");
 Console.WriteLine();
 
 VirtualWheel? wheel = null;
-VirtualController? interiorCameraController = null;
 try
 {
     Console.WriteLine("Initializing HIDMaestro...");
@@ -36,19 +34,7 @@ catch (Exception ex)
     Console.WriteLine("Run TruckTilt.Host as Administrator and try again.");
 }
 
-try
-{
-    Console.WriteLine("Initializing dedicated Interior CAM controller...");
-    interiorCameraController = new VirtualController();
-    Console.WriteLine("INTERIOR CAM CONTROLLER READY - bind its START button in ETS2/ATS.");
-}
-catch (Exception ex)
-{
-    Console.WriteLine("INTERIOR CAM CONTROLLER ERROR: " + ex.Message);
-    Console.WriteLine("The steering wheel can continue to operate, but Interior CAM binding is unavailable.");
-}
-
-GameAutoBinder.Start();
+// Manual in-game binding only: do not inject or auto-bind game controls.
 
 using var udp = new UdpClient(Port) { EnableBroadcast = true };
 var state = InputState.Neutral;
@@ -80,10 +66,8 @@ Console.CancelKeyPress += (_, e) =>
 {
     e.Cancel = true;
     wheel?.Neutralize();
-    try { interiorCameraController?.SetInteriorCamera(false); } catch { }
     telemetryHaptics.Dispose();
     wheel?.Dispose();
-    interiorCameraController?.Dispose();
     Environment.Exit(0);
 };
 
@@ -109,24 +93,6 @@ _ = Task.Run(async () =>
             else if (message.StartsWith("PING|", StringComparison.OrdinalIgnoreCase))
             {
                 response = Encoding.UTF8.GetBytes("PONG|" + message[5..]);
-            }
-            else if (message.Equals("INTERIORCAM|PRESS", StringComparison.OrdinalIgnoreCase))
-            {
-                if (interiorCameraController?.Ready == true)
-                {
-                    interiorCameraController.SetInteriorCamera(true);
-                    Console.WriteLine("Interior CAM: dedicated controller button pressed.");
-                    _ = Task.Run(async () =>
-                    {
-                        await Task.Delay(140);
-                        try { interiorCameraController?.SetInteriorCamera(false); }
-                        catch (Exception ex) { Console.WriteLine("Interior CAM release error: " + ex.Message); }
-                    });
-                }
-                else
-                {
-                    Console.WriteLine("Interior CAM: dedicated controller is not ready.");
-                }
             }
             else if (message.StartsWith("CAMERA|", StringComparison.OrdinalIgnoreCase))
             {
@@ -192,9 +158,9 @@ sealed record InputState(
     double Brake,
     double Clutch,
     double Retarder,
-    uint ButtonMask)
+    ulong ButtonMask)
 {
-    public static readonly InputState Neutral = new(0, 0, 0, 0, 0, 0, 0, 0);
+    public static readonly InputState Neutral = new(0, 0, 0, 0, 0, 0, 0, 0UL);
 
     public static bool TryParse(string packet, out InputState state)
     {
@@ -202,11 +168,11 @@ sealed record InputState(
         try
         {
             var p = packet.Split('|');
-            if (p.Length < 40 || !p[0].Equals("INPUT", StringComparison.OrdinalIgnoreCase)) return false;
+            if (p.Length < 41 || !p[0].Equals("INPUT", StringComparison.OrdinalIgnoreCase)) return false;
 
-            uint mask = 0;
-            for (int i = 0; i < 32; i++)
-                if (p[8 + i] == "1") mask |= 1u << i;
+            ulong mask = 0;
+            for (int i = 0; i < 33; i++)
+                if (p[8 + i] == "1") mask |= 1UL << i;
 
             state = new InputState(
                 long.Parse(p[1]), long.Parse(p[2]),

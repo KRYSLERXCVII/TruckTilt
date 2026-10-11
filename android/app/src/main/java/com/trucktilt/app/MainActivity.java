@@ -436,7 +436,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         final Paint stroke = new Paint(3);
         final HashMap<String,RectF> controls = new HashMap<>();
         final HashMap<Integer,String> pointerControls = new HashMap<>();
-        final boolean[] buttons = new boolean[32];
+        final boolean[] buttons = new boolean[33];
 
         final android.content.SharedPreferences layoutPrefs =
                 getSharedPreferences("trucktilt_layout", MODE_PRIVATE);
@@ -475,7 +475,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                 "PARK BRAKE", "ENGINE", "GEAR UP", "GEAR DOWN",
                 "CAMERA", "ROUTE", "MAP", "MIRROR",
                 "BEACON", "DIFF LOCK", "TRAILER", "WARNING",
-                "LEFT MIRROR", "RIGHT MIRROR", "ENTER", "BACK"
+                "LEFT MIRROR", "RIGHT MIRROR", "ENTER", "BACK", "INTERIOR CAM"
         };
 
         RectF wheelRect = new RectF();
@@ -827,9 +827,9 @@ public class MainActivity extends Activity implements SensorEventListener {
                     return true;
                 }
                 if(!customizing && hit("INTERIOR CAM",x,y)){
-                    // Independent host-side virtual controller button. This does not
-                    // reuse DirectInput button 20 (the existing CAMERA control).
-                    net.sendInteriorCamera();
+                    // Independent 33rd DirectInput wheel button; CAMERA (index 20) is untouched.
+                    buttons[32]=true;
+                    pointerControls.put(pointerId,"B32");
                     if(hapticsEnabled) performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY);
                     invalidate();
                     return true;
@@ -1278,14 +1278,6 @@ public class MainActivity extends Activity implements SensorEventListener {
             }catch(Exception ex){ lastSendError=ex.getClass().getSimpleName(); }
             long now=System.currentTimeMillis();
             if(now-rateWindowStart>=1000){rate=(int)rateWindowPackets;rateWindowPackets=0;rateWindowStart=now;}
-        }
-
-        void sendInteriorCamera(){
-            if(!connected||host==null){ lastSendError="host_not_connected"; return; }
-            try{
-                sendRaw("INTERIORCAM|PRESS",host,hostPort);
-                lastSendError=null;
-            }catch(Exception ex){ lastSendError=ex.getClass().getSimpleName(); }
         }
 
         void sendPing(){ if(!connected||host==null)return; try{sendRaw("PING|"+System.currentTimeMillis(),host,hostPort);}catch(Exception ex){lastSendError=ex.getClass().getSimpleName();} }

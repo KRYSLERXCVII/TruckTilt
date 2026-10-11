@@ -26,7 +26,7 @@ Phone sends at approximately 62 Hz:
 
 `INPUT|seq|timestampMs|steering|throttle|brake|clutch|retarder|b0|b1|...|b31`
 
-There are exactly 32 independent digital button fields after the five analog axes.
+There are 33 independent digital button fields after the five analog axes. Button 33 is INTERIOR CAM; the existing 32 indices are unchanged.
 
 Analog values:
 
@@ -37,14 +37,6 @@ Analog values:
 - `retarder`: `0.0 .. 1.0`
 
 Buttons are `0` or `1` and map one-to-one to HID button indices 1–32.
-
-## Interior CAM binding input
-
-When the user taps the dedicated INTERIOR CAM HUD button, the phone sends:
-
-`INTERIORCAM|PRESS`
-
-The Windows host pulses the START button on a separate virtual Xbox 360 controller for approximately 140 ms. This is independent of DirectInput wheel button 21 (CAMERA in the Android HUD is index 20 / HID button 21). The user manually binds the separate controller's START button to Interior Camera—or another desired action—in ETS2/ATS. No keyboard key is hard-coded.
 
 ## Ping
 
@@ -58,7 +50,7 @@ Windows replies:
 
 ## Safety
 
-The Windows host neutralizes all axes and releases all 32 buttons when no valid input packet has been received for more than 500 ms.
+The Windows host neutralizes all axes and releases all 33 buttons when no valid input packet has been received for more than 500 ms.
 
 ## Virtual device
 
@@ -71,7 +63,7 @@ It creates a custom HID/DirectInput-style steering wheel:
 - Brake — 16-bit simulation-control axis
 - Clutch — 16-bit simulation-control axis
 - Retarder — 16-bit slider axis
-- 32 independent buttons
+- 33 independent buttons
 - 8-way hat
 - PID force-feedback interface
 

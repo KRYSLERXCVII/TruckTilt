@@ -36,3 +36,6 @@
 | 32 | BACK | Back/cancel |
 
 This is a starting layout, not a hard-coded ETS2 binding. ETS2/ATS can bind the same physical button to any supported function.
+
+
+- Button 33: INTERIOR CAM — independent manual-bind input; CAMERA remains button 21 in one-based game numbering.

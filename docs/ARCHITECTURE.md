@@ -31,7 +31,7 @@ Descriptor inputs:
 - Generic Desktop Dial (retarder)
 - Simulation Controls Clutch
 - Generic Desktop Slider for retarder/auxiliary axis
-- 32 buttons
+- 33 buttons
 - 8-way hat
 - HID PID 1.0 force-feedback block
 
