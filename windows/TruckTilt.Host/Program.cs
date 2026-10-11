@@ -13,11 +13,13 @@ Console.WriteLine("================================================");
 Console.WriteLine($"Listening for TruckTilt phones on UDP {Port}");
 Console.WriteLine("Device: TruckTilt Virtual Steering Wheel (DirectInput/HID)");
 Console.WriteLine("Axes: Steering / Throttle / Brake / Clutch / Retarder");
-Console.WriteLine("Buttons: 32 independent HID buttons");
+Console.WriteLine("Buttons: 32 independent DirectInput wheel buttons");
+Console.WriteLine("Interior CAM: separate virtual Xbox controller START button (configurable in-game)");
 Console.WriteLine("Press Ctrl+C to exit.");
 Console.WriteLine();
 
 VirtualWheel? wheel = null;
+VirtualController? interiorCameraController = null;
 try
 {
     Console.WriteLine("Initializing HIDMaestro...");
@@ -32,6 +34,18 @@ catch (Exception ex)
     Console.WriteLine(ex);
     Console.WriteLine();
     Console.WriteLine("Run TruckTilt.Host as Administrator and try again.");
+}
+
+try
+{
+    Console.WriteLine("Initializing dedicated Interior CAM controller...");
+    interiorCameraController = new VirtualController();
+    Console.WriteLine("INTERIOR CAM CONTROLLER READY - bind its START button in ETS2/ATS.");
+}
+catch (Exception ex)
+{
+    Console.WriteLine("INTERIOR CAM CONTROLLER ERROR: " + ex.Message);
+    Console.WriteLine("The steering wheel can continue to operate, but Interior CAM binding is unavailable.");
 }
 
 GameAutoBinder.Start();
@@ -66,8 +80,10 @@ Console.CancelKeyPress += (_, e) =>
 {
     e.Cancel = true;
     wheel?.Neutralize();
+    try { interiorCameraController?.SetInteriorCamera(false); } catch { }
     telemetryHaptics.Dispose();
     wheel?.Dispose();
+    interiorCameraController?.Dispose();
     Environment.Exit(0);
 };
 
@@ -93,6 +109,24 @@ _ = Task.Run(async () =>
             else if (message.StartsWith("PING|", StringComparison.OrdinalIgnoreCase))
             {
                 response = Encoding.UTF8.GetBytes("PONG|" + message[5..]);
+            }
+            else if (message.Equals("INTERIORCAM|PRESS", StringComparison.OrdinalIgnoreCase))
+            {
+                if (interiorCameraController?.Ready == true)
+                {
+                    interiorCameraController.SetInteriorCamera(true);
+                    Console.WriteLine("Interior CAM: dedicated controller button pressed.");
+                    _ = Task.Run(async () =>
+                    {
+                        await Task.Delay(140);
+                        try { interiorCameraController?.SetInteriorCamera(false); }
+                        catch (Exception ex) { Console.WriteLine("Interior CAM release error: " + ex.Message); }
+                    });
+                }
+                else
+                {
+                    Console.WriteLine("Interior CAM: dedicated controller is not ready.");
+                }
             }
             else if (message.StartsWith("CAMERA|", StringComparison.OrdinalIgnoreCase))
             {

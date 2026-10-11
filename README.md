@@ -74,3 +74,8 @@ Support is optional and does not affect the controller functionality.
 TruckTilt currently has a working Android cockpit, Windows host, Wi-Fi/UDP communication, virtual controller output, steering/pedal controls, camera touchpad, and customizable cockpit layout.
 
 If the repository is intended to be open source, a standard license such as MIT can be added as a separate `LICENSE` file.
+
+
+## Dedicated Interior CAM binding
+
+The `INTERIOR CAM` HUD button is a separate input from the existing `CAMERA` wheel button. The Windows host creates a second virtual Xbox 360 controller for this feature and sends a short START-button press when the Android button is tapped. In ETS2/ATS, open **Options → Keys & Buttons**, choose **Interior Camera**, then tap **INTERIOR CAM** in TruckTilt while the game is waiting for input. Save the binding. The button is not hard-coded to keyboard `1`, and its binding is configured manually in-game.

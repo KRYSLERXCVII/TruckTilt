@@ -137,6 +137,38 @@ public sealed class VirtualController : IDisposable
         }
     }
 
+    /// <summary>
+    /// Pulses the dedicated second Xbox controller's START button. This device
+    /// is reserved for the configurable Interior CAM input and is independent
+    /// of the DirectInput wheel's CAMERA button.
+    /// </summary>
+    public void SetInteriorCamera(bool pressed)
+    {
+        if (!Ready)
+            return;
+
+        var axes = HMGamepadStateHelpers.StandardAxes(
+            _profile,
+            leftStickX: 0.5f,
+            leftStickY: 0.5f,
+            rightStickX: 0.5f,
+            rightStickY: 0.5f,
+            leftTrigger: 0.0f,
+            rightTrigger: 0.0f);
+
+        var state = new HMGamepadState
+        {
+            Axes = axes,
+            Buttons = pressed ? HMButton.Start : HMButton.None,
+            Hat = HMHat.None
+        };
+
+        lock (_sync)
+        {
+            _controller.SubmitState(in state);
+        }
+    }
+
     private static HMHat BuildHat(InputButtons buttons)
     {
         bool up = Has(buttons, InputButtons.HighBeam);

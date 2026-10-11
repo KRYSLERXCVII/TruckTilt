@@ -827,10 +827,9 @@ public class MainActivity extends Activity implements SensorEventListener {
                     return true;
                 }
                 if(!customizing && hit("INTERIOR CAM",x,y)){
-                    // Send a virtual HID button so the player can bind it to any
-                    // game action in ETS2/ATS. No keyboard key is hard-coded.
-                    buttons[20]=true; // Same DirectInput button as the standard CAMERA control.
-                    pointerControls.put(pointerId,"B20");
+                    // Independent host-side virtual controller button. This does not
+                    // reuse DirectInput button 20 (the existing CAMERA control).
+                    net.sendInteriorCamera();
                     if(hapticsEnabled) performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY);
                     invalidate();
                     return true;
@@ -1279,6 +1278,14 @@ public class MainActivity extends Activity implements SensorEventListener {
             }catch(Exception ex){ lastSendError=ex.getClass().getSimpleName(); }
             long now=System.currentTimeMillis();
             if(now-rateWindowStart>=1000){rate=(int)rateWindowPackets;rateWindowPackets=0;rateWindowStart=now;}
+        }
+
+        void sendInteriorCamera(){
+            if(!connected||host==null){ lastSendError="host_not_connected"; return; }
+            try{
+                sendRaw("INTERIORCAM|PRESS",host,hostPort);
+                lastSendError=null;
+            }catch(Exception ex){ lastSendError=ex.getClass().getSimpleName(); }
         }
 
         void sendPing(){ if(!connected||host==null)return; try{sendRaw("PING|"+System.currentTimeMillis(),host,hostPort);}catch(Exception ex){lastSendError=ex.getClass().getSimpleName();} }

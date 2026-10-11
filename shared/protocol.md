@@ -38,6 +38,14 @@ Analog values:
 
 Buttons are `0` or `1` and map one-to-one to HID button indices 1–32.
 
+## Interior CAM binding input
+
+When the user taps the dedicated INTERIOR CAM HUD button, the phone sends:
+
+`INTERIORCAM|PRESS`
+
+The Windows host pulses the START button on a separate virtual Xbox 360 controller for approximately 140 ms. This is independent of DirectInput wheel button 21 (CAMERA in the Android HUD is index 20 / HID button 21). The user manually binds the separate controller's START button to Interior Camera—or another desired action—in ETS2/ATS. No keyboard key is hard-coded.
+
 ## Ping
 
 Phone sends:
