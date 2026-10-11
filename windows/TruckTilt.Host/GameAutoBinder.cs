@@ -372,6 +372,11 @@ internal static class GameAutoBinder
         foreach ((int button, string mix) in ButtonBindings)
             AddButtonToMix(ref text, mix, $"joy.b{button}", ref changed);
 
+        // Bind keyboard 1 to the dedicated interior-camera action when that
+        // action exists in this game's controls.sii. Do not create unknown mix
+        // entries or alter other keyboard bindings.
+        AddButtonToMix(ref text, "cam1", "keyboard.1", ref changed);
+
         // Separate axis configuration: TruckTilt has independent throttle/brake.
         ReplaceOrAddConstant(ref text, "c_jcombined", "0.000000", ref changed);
 
