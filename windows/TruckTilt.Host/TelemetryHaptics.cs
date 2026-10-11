@@ -60,7 +60,7 @@ internal sealed class TelemetryHaptics : IDisposable
                 {
                     if ((DateTime.UtcNow - _lastWaitingLog).TotalSeconds >= 5)
                     {
-                        Console.WriteLine("HAPTICS: waiting for SCSTelemetry...");
+                        HostLog.Debug("HAPTICS: waiting for SCSTelemetry...");
                         _lastWaitingLog = DateTime.UtcNow;
                     }
                     await Task.Delay(1000, _cts.Token);
@@ -71,7 +71,7 @@ internal sealed class TelemetryHaptics : IDisposable
                 {
                     if (!_activeStatusLogged)
                     {
-                        Console.WriteLine("HAPTICS: telemetry active.");
+                        HostLog.Public("Haptics telemetry: ACTIVE");
                         _activeStatusLogged = true;
                     }
                     ProcessSnapshot();
@@ -80,7 +80,7 @@ internal sealed class TelemetryHaptics : IDisposable
                 {
                     if (_activeStatusLogged)
                     {
-                        Console.WriteLine("HAPTICS: telemetry connected, waiting for active game data.");
+                        HostLog.Debug("HAPTICS: telemetry connected, waiting for active game data.");
                         _activeStatusLogged = false;
                     }
                     ResetState(sendRumbleStop: true);
@@ -109,7 +109,7 @@ internal sealed class TelemetryHaptics : IDisposable
             _view = _map.CreateViewAccessor(0, 0, MemoryMappedFileAccess.Read);
             if (!_mapStatusLogged)
             {
-                Console.WriteLine("HAPTICS: telemetry connected.");
+                HostLog.Debug("HAPTICS: telemetry connected.");
                 _mapStatusLogged = true;
             }
             return true;

@@ -20,3 +20,8 @@ The host exposes the existing **TruckTilt Virtual Steering Wheel** as a custom D
 4. Press INTERIOR CAM when the game asks for the input; it should register as button 33 on the same TruckTilt wheel.
 
 The INTERIOR CAM control can be moved/resized using CUSTOMIZE on the phone. RESET LAYOUT remains directly below HAPTICS ON/OFF.
+
+
+## Public console and diagnostics
+
+The host shows a concise status display by default. To show detailed HID, axis, button, telemetry, and force-feedback diagnostics, launch from a terminal with `TruckTilt.Host.exe --debug`. Diagnostic logs are written to `%LOCALAPPDATA%\TruckTilt\logs\host-YYYYMMDD.log` when the log directory is available.

@@ -6,32 +6,26 @@ using TruckTilt.Host;
 
 const int Port = 45454;
 const int TimeoutMs = 500;
+bool debugMode = args.Any(a => a.Equals("--debug", StringComparison.OrdinalIgnoreCase) || a.Equals("-d", StringComparison.OrdinalIgnoreCase));
+HostLog.Initialize(debugMode);
 
-Console.Title = "TruckTilt Host";
-Console.WriteLine("TruckTilt Host v0.12.6 - ETS2 DirectInput Wheel");
-Console.WriteLine("================================================");
-Console.WriteLine($"Listening for TruckTilt phones on UDP {Port}");
-Console.WriteLine("Device: TruckTilt Virtual Steering Wheel (DirectInput/HID)");
-Console.WriteLine("Axes: Steering / Throttle / Brake / Clutch / Retarder");
-Console.WriteLine("Buttons: 33 independent HID buttons (INTERIOR CAM is button 33)");
-Console.WriteLine("Press Ctrl+C to exit.");
-Console.WriteLine();
+Console.Title = debugMode ? "TruckTilt Host - Debug" : "TruckTilt Host";
+HostLog.Public("TruckTilt Host v0.12.6");
+HostLog.Public("Starting virtual steering wheel...");
+HostLog.Public(debugMode ? "Debug mode: ON (detailed diagnostics enabled)." : "Public mode: clean status display. Use --debug for diagnostics.");
 
 VirtualWheel? wheel = null;
 try
 {
-    Console.WriteLine("Initializing HIDMaestro...");
+    HostLog.Debug("Initializing HIDMaestro...");
     wheel = new VirtualWheel();
-    Console.WriteLine("VIRTUAL STEERING WHEEL READY");
-    Console.WriteLine("ETS2 / ATS auto-binding will be applied when the game is detected.");
+    HostLog.Public("Virtual steering wheel: READY");
+    HostLog.Public("Phone: WAITING FOR CONNECTION");
+    HostLog.Public("Game: WAITING FOR ETS2 / ATS");
 }
 catch (Exception ex)
 {
-    Console.WriteLine();
-    Console.WriteLine("VIRTUAL WHEEL ERROR");
-    Console.WriteLine(ex);
-    Console.WriteLine();
-    Console.WriteLine("Run TruckTilt.Host as Administrator and try again.");
+    HostLog.Error("Virtual steering wheel failed to initialize. Run as Administrator and check the diagnostic log.", ex);
 }
 
 // Manual in-game binding only: do not inject or auto-bind game controls.
@@ -87,7 +81,13 @@ _ = Task.Run(async () =>
             }
             else if (message.StartsWith("CONNECT|", StringComparison.OrdinalIgnoreCase))
             {
-                lock (sync) phoneEndpoint = result.RemoteEndPoint;
+                bool firstConnection;
+                lock (sync)
+                {
+                    firstConnection = phoneEndpoint is null || !phoneEndpoint.Equals(result.RemoteEndPoint);
+                    phoneEndpoint = result.RemoteEndPoint;
+                }
+                if (firstConnection) HostLog.Public("Phone: CONNECTED");
                 response = Encoding.UTF8.GetBytes($"WELCOME|{Environment.MachineName}|0.12.6");
             }
             else if (message.StartsWith("PING|", StringComparison.OrdinalIgnoreCase))
@@ -131,9 +131,22 @@ _ = Task.Run(async () =>
     }
 });
 
+string? lastGameStatus = null;
+DateTime lastGameCheck = DateTime.MinValue;
 while (true)
 {
     await Task.Delay(100);
+    if ((DateTime.UtcNow - lastGameCheck).TotalSeconds >= 1)
+    {
+        lastGameCheck = DateTime.UtcNow;
+        string? gameStatus = Process.GetProcessesByName("eurotrucks2").Length > 0 ? "ETS2 DETECTED" :
+                             Process.GetProcessesByName("amtrucks").Length > 0 ? "ATS DETECTED" : "WAITING FOR ETS2 / ATS";
+        if (!string.Equals(gameStatus, lastGameStatus, StringComparison.Ordinal))
+        {
+            lastGameStatus = gameStatus;
+            HostLog.Public("Game: " + gameStatus);
+        }
+    }
     bool timedOut = false;
     lock (sync)
     {
@@ -146,7 +159,7 @@ while (true)
     if (timedOut)
     {
         wheel?.Neutralize();
-        Console.WriteLine("SAFETY TIMEOUT - wheel neutralized.");
+        HostLog.Public("Safety timeout: controls neutralized (phone input lost).");
     }
 }
 

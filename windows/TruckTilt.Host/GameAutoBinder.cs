@@ -164,14 +164,13 @@ internal static class GameAutoBinder
             _lastConfiguredDevice = deviceId;
         }
 
-        Console.WriteLine(
-            $"AUTO-BIND: {gameName} detected — TruckTilt configured ({changed} changes).");
-        Console.WriteLine("AUTO-BIND: Steering X / Normal");
-        Console.WriteLine("AUTO-BIND: Throttle RY / Normal");
-        Console.WriteLine("AUTO-BIND: Brake RX / Normal");
-        Console.WriteLine("AUTO-BIND: Clutch SL1 / Normal");
-        Console.WriteLine("AUTO-BIND: Combined pedals OFF");
-        Console.WriteLine($"AUTO-BIND: Backup created: {Path.GetFileName(backupPath)}");
+        HostLog.Public($"Game: {gameName} detected — controls configured.");
+        HostLog.Debug("AUTO-BIND: Steering X / Normal");
+        HostLog.Debug("AUTO-BIND: Throttle RY / Normal");
+        HostLog.Debug("AUTO-BIND: Brake RX / Normal");
+        HostLog.Debug("AUTO-BIND: Clutch SL1 / Normal");
+        HostLog.Debug("AUTO-BIND: Combined pedals OFF");
+        HostLog.Debug($"AUTO-BIND: Backup created: {Path.GetFileName(backupPath)}");
     }
 
     private static Process? GetRunningGame()

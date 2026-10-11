@@ -80,12 +80,12 @@ public sealed class VirtualWheel : IDisposable
             .Notes("TruckTilt ETS2 wheel: X steering, Rx brake, Ry throttle, Slider clutch, Dial retarder, exactly 33 buttons, 8-way POV. Extra Slider/Dial axes are driven directly by HID usage.")
             .Build();
 
-        Console.WriteLine($"Custom HID profile: {_profile.Name}");
-        Console.WriteLine($"Type: {_profile.Type}  Axes: {_profile.AxisCount}  Buttons: {_profile.ButtonCount}");
-        Console.WriteLine("Available axes: " + string.Join(", ", _profile.AvailableAxes));
-        Console.WriteLine("Sticks: " + string.Join(", ", _profile.Sticks.Select(s => $"{s.XAxis}/{s.YAxis}")));
-        Console.WriteLine("Triggers: " + string.Join(", ", _profile.Triggers.Select(t => t.Axis)));
-        Console.WriteLine("Creating DirectInput/HID virtual wheel...");
+        HostLog.Debug($"Custom HID profile: {_profile.Name}");
+        HostLog.Debug($"Type: {_profile.Type}  Axes: {_profile.AxisCount}  Buttons: {_profile.ButtonCount}");
+        HostLog.Debug("Available axes: " + string.Join(", ", _profile.AvailableAxes));
+        HostLog.Debug("Sticks: " + string.Join(", ", _profile.Sticks.Select(s => $"{s.XAxis}/{s.YAxis}")));
+        HostLog.Debug("Triggers: " + string.Join(", ", _profile.Triggers.Select(t => t.Axis)));
+        HostLog.Debug("Creating DirectInput/HID virtual wheel...");
 
         _controller = _context.CreateController(_profile, "TruckTilt-VirtualWheel");
 
@@ -124,11 +124,11 @@ public sealed class VirtualWheel : IDisposable
             _controller.PublishPidState(
                 effectBlockIndex: 0,
                 PidStateFlags.ActuatorsEnabled | PidStateFlags.ActuatorPower);
-            Console.WriteLine("PID force-feedback interface: READY");
+            HostLog.Debug("PID force-feedback interface: READY");
         }
         catch (Exception ex)
         {
-            Console.WriteLine("PID force-feedback setup skipped: " + ex.Message);
+            HostLog.Debug("PID force-feedback setup skipped: " + ex.Message);
         }
 
         Ready = true;
@@ -177,7 +177,7 @@ public sealed class VirtualWheel : IDisposable
     }
 
     private void OnOutputDecoded(object? sender, HMOutputDecodedEventArgs e)
-        => Console.WriteLine($"FFB OUTPUT received: {e}");
+        => HostLog.Debug($"FFB OUTPUT received: {e}");
 
     public void Neutralize() => Submit(0, 0, 0, 0, 0, 0);
 
