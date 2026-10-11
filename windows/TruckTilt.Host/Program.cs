@@ -94,13 +94,6 @@ _ = Task.Run(async () =>
             {
                 response = Encoding.UTF8.GetBytes("PONG|" + message[5..]);
             }
-            else if (message.Equals("KEY|1", StringComparison.OrdinalIgnoreCase))
-            {
-                bool sent = InteriorCameraKey.SendKey1ToGame();
-                Console.WriteLine(sent
-                    ? "Interior camera: sent keyboard 1 to the foreground game."
-                    : "Interior camera: ignored; bring ETS2 or ATS to the foreground first.");
-            }
             else if (message.StartsWith("CAMERA|", StringComparison.OrdinalIgnoreCase))
             {
                 if (CameraController.TryParse(message, out var dx, out var dy))
@@ -190,52 +183,4 @@ sealed record InputState(
     }
 
     static double D(string s) => double.Parse(s, System.Globalization.CultureInfo.InvariantCulture);
-}
-
-
-/// <summary>
-/// Sends keyboard 1 only while ETS2 or ATS is the foreground application.
-/// Used by TruckTilt's dedicated Interior Camera button.
-/// </summary>
-static class InteriorCameraKey
-{
-    private const uint KeyEventKeyUp = 0x0002;
-    private const byte Vk1 = 0x31;
-
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern IntPtr GetForegroundWindow();
-
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
-
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
-
-    public static bool SendKey1ToGame()
-    {
-        IntPtr hwnd = GetForegroundWindow();
-        if (hwnd == IntPtr.Zero)
-            return false;
-
-        GetWindowThreadProcessId(hwnd, out uint pid);
-        if (pid == 0)
-            return false;
-
-        try
-        {
-            string name = Process.GetProcessById((int)pid).ProcessName;
-            if (!name.Equals("eurotrucks2", StringComparison.OrdinalIgnoreCase) &&
-                !name.Equals("amtrucks", StringComparison.OrdinalIgnoreCase))
-                return false;
-
-            keybd_event(Vk1, 0, 0, UIntPtr.Zero);
-            keybd_event(Vk1, 0, KeyEventKeyUp, UIntPtr.Zero);
-            return true;
-        }
-        catch
-        {
-            // Ignore if the game closes between the focus check and key send.
-            return false;
-        }
-    }
 }
