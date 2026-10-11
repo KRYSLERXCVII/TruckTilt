@@ -593,7 +593,6 @@ public class MainActivity extends Activity implements SensorEventListener {
             button(c,"CALIBRATE",wheelCx+111,78,115,38,false);
             button(c,"CUSTOMIZE",wheelCx+215,78,135,38,customizing);
             button(c,hapticsEnabled ? "HAPTICS ON" : "HAPTICS OFF",wheelCx+215,124,135,34,hapticsEnabled);
-            button(c,"INTERIOR CAM (1)",wheelCx+215,164,135,34,false);
             if(customizing)
                 button(c,"RESET LAYOUT",wheelCx+215,204,135,34,false);
 
@@ -649,6 +648,14 @@ public class MainActivity extends Activity implements SensorEventListener {
                 float x=centerLeft+colW*(col+.5f);
                 drawMappedButton(c,utilityRow2[col],x,top+rowGap*5.5f,buttonW,centerButtonH);
             }
+            // Interior camera: editable like other HUD controls; default is below TRAILER.
+            RectF interiorCamRect = new RectF(centerLeft+colW*3.5f-buttonW/2f,
+                    top+rowGap*5.5f-centerButtonH/2f,
+                    centerLeft+colW*3.5f+buttonW/2f,
+                    top+rowGap*5.5f+centerButtonH/2f);
+            interiorCamRect = customRect("INTERIOR_CAM", interiorCamRect);
+            controls.put("INTERIOR_CAM", new RectF(interiorCamRect));
+            button(c, "INTERIOR CAM (1)", interiorCamRect.centerX(), interiorCamRect.centerY(), interiorCamRect.width(), interiorCamRect.height(), false);
 
             float cameraLeft=centerLeft+8f, cameraRight=centerRight-8f;
             float cameraTop=top+rowGap*7f+14f, cameraBottom=h*.94f;
@@ -819,7 +826,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                     setHapticsEnabled(!hapticsEnabled);
                     return true;
                 }
-                if(hit("INTERIOR CAM (1)",x,y)){
+                if(!customizing && hit("INTERIOR CAM (1)",x,y)){
                     // Give immediate local feedback even if the host/game cannot act on the command.
                     if(hapticsEnabled) performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY);
                     net.sendInteriorCamera();
@@ -1017,7 +1024,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
 
         boolean isEditableKey(String key) {
-            return key != null && (key.startsWith("B") || key.startsWith("P_") || "CAMERA_PAD".equals(key));
+            return key != null && (key.startsWith("B") || key.startsWith("P_") || "CAMERA_PAD".equals(key) || "INTERIOR_CAM".equals(key));
         }
 
         String findEditableKey(float x,float y) {
@@ -1031,6 +1038,8 @@ public class MainActivity extends Activity implements SensorEventListener {
             }
             RectF cam=controls.get("CAMERA_PAD");
             if(cam!=null && cam.contains(x,y)) return "CAMERA_PAD";
+            RectF interior=controls.get("INTERIOR_CAM");
+            if(interior!=null && interior.contains(x,y)) return "INTERIOR_CAM";
             return null;
         }
 
