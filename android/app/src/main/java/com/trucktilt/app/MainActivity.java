@@ -54,6 +54,23 @@ public class MainActivity extends Activity implements SensorEventListener {
     long calibrationFadeStartNs = 0L;
     static final long CALIBRATION_FADE_NS = 250_000_000L;
 
+    // Independent camera-only gyro tracking. These values never feed into or
+    // modify the existing steering integration/calibration path above.
+    private boolean cameraGyroWasActive = false;
+    private float cameraGyroYawDeg = 0f;
+    private float cameraGyroPitchDeg = 0f;
+    private float cameraGyroBiasXDegPerSec = 0f;
+    private float cameraGyroBiasYDegPerSec = 0f;
+    private float cameraGyroFilteredXDegPerSec = 0f;
+    private float cameraGyroFilteredYDegPerSec = 0f;
+    private boolean cameraGyroFilterInitialized = false;
+    private long cameraGyroStationarySinceNs = 0L;
+    private float cameraGyroLastMouseX = 0f;
+    private float cameraGyroLastMouseY = 0f;
+    private static final float CAMERA_GYRO_MOUSE_PER_DEG = 5.0f;
+    private static final float CAMERA_GYRO_MAX_YAW_DEG = 35.0f;
+    private static final float CAMERA_GYRO_MAX_PITCH_DEG = 22.0f;
+
     UdpClient net;
     volatile int batteryPercent = -1;
     final BroadcastReceiver batteryReceiver = new BroadcastReceiver() {
@@ -162,6 +179,11 @@ public class MainActivity extends Activity implements SensorEventListener {
 
             // Ignore only invalid/long gaps; do not quantize the steering angle.
             if (dt > 0f && dt < 0.1f) {
+                // Camera gyro is a separate path and is active only in VIRTUAL WHEEL
+                // mode. It uses the other phone rotation axes; steering's z-axis
+                // integration and all of its calibration/recovery code stay intact.
+                updateCameraGyro(e.values[0], e.values[1], dt, e.timestamp);
+
                 float measuredRateDegPerSec = -(float)Math.toDegrees(e.values[2]);
                 float correctedRate = measuredRateDegPerSec - gyroBiasDegPerSec;
 
@@ -277,6 +299,94 @@ public class MainActivity extends Activity implements SensorEventListener {
             }
         }
         if (view != null) view.invalidate();
+    }
+
+    /**
+     * Converts phone gyro rotation into relative mouse deltas for the interior
+     * camera. Entering virtual-wheel mode establishes a fresh neutral reference;
+     * rotating back to that orientation emits reverse deltas and restores the view.
+     * This method intentionally does not read or write any steering state.
+     */
+    private void updateCameraGyro(float rateXRadPerSec, float rateYRadPerSec,
+                                  float dt, long timestampNs) {
+        boolean active = view != null && view.mode == 2;
+        if (!active) {
+            cameraGyroWasActive = false;
+            cameraGyroFilterInitialized = false;
+            cameraGyroStationarySinceNs = 0L;
+            return;
+        }
+
+        if (!cameraGyroWasActive) {
+            cameraGyroWasActive = true;
+            cameraGyroYawDeg = 0f;
+            cameraGyroPitchDeg = 0f;
+            cameraGyroLastMouseX = 0f;
+            cameraGyroLastMouseY = 0f;
+            cameraGyroBiasXDegPerSec = 0f;
+            cameraGyroBiasYDegPerSec = 0f;
+            cameraGyroFilteredXDegPerSec = 0f;
+            cameraGyroFilteredYDegPerSec = 0f;
+            cameraGyroFilterInitialized = false;
+            cameraGyroStationarySinceNs = 0L;
+            return;
+        }
+
+        if (!(dt > 0f && dt < 0.1f)) return;
+
+        // In landscape orientation, device X is the phone's vertical rotation
+        // axis (camera yaw) and device Y is its horizontal rotation axis (pitch).
+        float measuredX = -(float)Math.toDegrees(rateXRadPerSec);
+        float measuredY =  (float)Math.toDegrees(rateYRadPerSec);
+        float correctedX = measuredX - cameraGyroBiasXDegPerSec;
+        float correctedY = measuredY - cameraGyroBiasYDegPerSec;
+
+        // Estimate camera-only gyro bias while the phone is still. This state is
+        // independent of the steering bias and cannot alter steering behaviour.
+        if (Math.abs(correctedX) < 0.35f && Math.abs(correctedY) < 0.35f) {
+            if (cameraGyroStationarySinceNs == 0L) cameraGyroStationarySinceNs = timestampNs;
+            if (timestampNs - cameraGyroStationarySinceNs >= 600_000_000L) {
+                float biasAlpha = dt / (8.0f + dt);
+                cameraGyroBiasXDegPerSec += measuredX * biasAlpha;
+                cameraGyroBiasYDegPerSec += measuredY * biasAlpha;
+            }
+        } else {
+            cameraGyroStationarySinceNs = 0L;
+        }
+
+        correctedX = measuredX - cameraGyroBiasXDegPerSec;
+        correctedY = measuredY - cameraGyroBiasYDegPerSec;
+        if (Math.abs(correctedX) < 0.10f) correctedX = 0f;
+        if (Math.abs(correctedY) < 0.10f) correctedY = 0f;
+
+        float alpha = dt / (0.025f + dt);
+        if (!cameraGyroFilterInitialized) {
+            cameraGyroFilteredXDegPerSec = correctedX;
+            cameraGyroFilteredYDegPerSec = correctedY;
+            cameraGyroFilterInitialized = true;
+        } else {
+            cameraGyroFilteredXDegPerSec +=
+                    (correctedX - cameraGyroFilteredXDegPerSec) * alpha;
+            cameraGyroFilteredYDegPerSec +=
+                    (correctedY - cameraGyroFilteredYDegPerSec) * alpha;
+        }
+
+        cameraGyroYawDeg = clamp(
+                cameraGyroYawDeg + cameraGyroFilteredXDegPerSec * dt,
+                -CAMERA_GYRO_MAX_YAW_DEG, CAMERA_GYRO_MAX_YAW_DEG);
+        cameraGyroPitchDeg = clamp(
+                cameraGyroPitchDeg + cameraGyroFilteredYDegPerSec * dt,
+                -CAMERA_GYRO_MAX_PITCH_DEG, CAMERA_GYRO_MAX_PITCH_DEG);
+
+        float targetMouseX = cameraGyroYawDeg * CAMERA_GYRO_MOUSE_PER_DEG;
+        float targetMouseY = cameraGyroPitchDeg * CAMERA_GYRO_MOUSE_PER_DEG;
+        float dx = targetMouseX - cameraGyroLastMouseX;
+        float dy = targetMouseY - cameraGyroLastMouseY;
+        cameraGyroLastMouseX = targetMouseX;
+        cameraGyroLastMouseY = targetMouseY;
+
+        if (view != null && (Math.abs(dx) > 0.001f || Math.abs(dy) > 0.001f))
+            view.addCameraDelta(dx, dy);
     }
 
     @Override public void onAccuracyChanged(Sensor s, int a) {}
@@ -1148,6 +1258,13 @@ public class MainActivity extends Activity implements SensorEventListener {
             RectF r=controls.get("P_"+s);
             if(r==null) return 0f;
             return clamp((r.bottom-y)/r.height(),0f,1f);
+        }
+
+        void addCameraDelta(float dx, float dy){
+            synchronized(cameraSync){
+                cameraDx += dx;
+                cameraDy += dy;
+            }
         }
 
         float[] consumeCameraDelta(){
