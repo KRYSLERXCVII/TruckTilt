@@ -594,7 +594,7 @@ public class MainActivity extends Activity implements SensorEventListener {
             button(c,"CUSTOMIZE",wheelCx+215,78,135,38,customizing);
             button(c,hapticsEnabled ? "HAPTICS ON" : "HAPTICS OFF",wheelCx+215,124,135,34,hapticsEnabled);
             if(customizing)
-                button(c,"RESET LAYOUT",wheelCx+215,204,135,34,false);
+                button(c,"RESET LAYOUT",wheelCx+215,164,135,34,false);
 
             float quickY=wheelCy-radius-34f;
             float quickW=Math.min(112f, Math.max(92f, w * 0.052f));
@@ -655,7 +655,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                     top+rowGap*5.5f+centerButtonH/2f);
             interiorCamRect = customRect("INTERIOR_CAM", interiorCamRect);
             controls.put("INTERIOR_CAM", new RectF(interiorCamRect));
-            button(c, "INTERIOR CAM (1)", interiorCamRect.centerX(), interiorCamRect.centerY(), interiorCamRect.width(), interiorCamRect.height(), false);
+            button(c, "INTERIOR CAM", interiorCamRect.centerX(), interiorCamRect.centerY(), interiorCamRect.width(), interiorCamRect.height(), false);
 
             float cameraLeft=centerLeft+8f, cameraRight=centerRight-8f;
             float cameraTop=top+rowGap*7f+14f, cameraBottom=h*.94f;
@@ -826,10 +826,12 @@ public class MainActivity extends Activity implements SensorEventListener {
                     setHapticsEnabled(!hapticsEnabled);
                     return true;
                 }
-                if(!customizing && hit("INTERIOR CAM (1)",x,y)){
-                    // Give immediate local feedback even if the host/game cannot act on the command.
+                if(!customizing && hit("INTERIOR CAM",x,y)){
+                    // Send a virtual HID button so the player can bind it to any
+                    // game action in ETS2/ATS. No keyboard key is hard-coded.
+                    buttons[20]=true; // Same DirectInput button as the standard CAMERA control.
+                    pointerControls.put(pointerId,"B20");
                     if(hapticsEnabled) performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY);
-                    net.sendInteriorCamera();
                     invalidate();
                     return true;
                 }
@@ -1277,12 +1279,6 @@ public class MainActivity extends Activity implements SensorEventListener {
             }catch(Exception ex){ lastSendError=ex.getClass().getSimpleName(); }
             long now=System.currentTimeMillis();
             if(now-rateWindowStart>=1000){rate=(int)rateWindowPackets;rateWindowPackets=0;rateWindowStart=now;}
-        }
-
-        void sendInteriorCamera(){
-            if(!connected||host==null)return;
-            try{sendRaw("KEY|1",host,hostPort);}
-            catch(Exception ex){lastSendError=ex.getClass().getSimpleName();}
         }
 
         void sendPing(){ if(!connected||host==null)return; try{sendRaw("PING|"+System.currentTimeMillis(),host,hostPort);}catch(Exception ex){lastSendError=ex.getClass().getSimpleName();} }
