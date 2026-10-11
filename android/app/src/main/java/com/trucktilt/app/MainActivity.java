@@ -57,6 +57,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     // Independent camera-only gyro tracking. These values never feed into or
     // modify the existing steering integration/calibration path above.
     private boolean cameraGyroWasActive = false;
+    private volatile boolean cameraGyroEnabled = true;
     private float cameraGyroYawDeg = 0f;
     private float cameraGyroPitchDeg = 0f;
     private float cameraGyroBiasXDegPerSec = 0f;
@@ -105,6 +106,8 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         hapticsEnabled = getSharedPreferences("trucktilt_settings", MODE_PRIVATE)
                 .getBoolean("haptics_enabled", true);
+        cameraGyroEnabled = getSharedPreferences("trucktilt_settings", MODE_PRIVATE)
+                .getBoolean("camera_gyro_enabled", true);
         if (Build.VERSION.SDK_INT >= 31) {
             VibratorManager vm = (VibratorManager)getSystemService(VIBRATOR_MANAGER_SERVICE);
             vibrator = vm.getDefaultVibrator();
@@ -309,7 +312,7 @@ public class MainActivity extends Activity implements SensorEventListener {
      */
     private void updateCameraGyro(float rateXRadPerSec, float rateYRadPerSec,
                                   float dt, long timestampNs) {
-        boolean active = view != null && view.mode == 2;
+        boolean active = view != null && view.mode == 2 && cameraGyroEnabled;
         if (!active) {
             cameraGyroWasActive = false;
             cameraGyroFilterInitialized = false;
@@ -390,6 +393,19 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     @Override public void onAccuracyChanged(Sensor s, int a) {}
+
+    void setCameraGyroEnabled(boolean enabled) {
+        cameraGyroEnabled = enabled;
+        getSharedPreferences("trucktilt_settings", MODE_PRIVATE)
+                .edit().putBoolean("camera_gyro_enabled", enabled).apply();
+        if (!enabled) {
+            // Stop camera tracking immediately; steering state is untouched.
+            cameraGyroWasActive = false;
+            cameraGyroFilterInitialized = false;
+            cameraGyroStationarySinceNs = 0L;
+        }
+        if (view != null) view.invalidate();
+    }
 
     void setHapticsEnabled(boolean enabled) {
         hapticsEnabled = enabled;
@@ -622,7 +638,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                         : Color.WHITE;
                 text(c, "BAT " + battery + "%", w - 305, 36, 13, batteryColor, Paint.Align.RIGHT);
             }
-            text(c,"by KRYSLERXCVII  •  v0.14.0",136,37,15,Color.rgb(205,212,220),Paint.Align.LEFT);
+            text(c,"by KRYSLERXCVII  •  v0.16.3",136,37,15,Color.rgb(205,212,220),Paint.Align.LEFT);
 
             donateButton(c,"DONATE",w-82,29,132,38);
 
@@ -703,8 +719,10 @@ public class MainActivity extends Activity implements SensorEventListener {
             button(c,"CALIBRATE",wheelCx+111,78,115,38,false);
             button(c,"CUSTOMIZE",wheelCx+215,78,135,38,customizing);
             button(c,hapticsEnabled ? "HAPTICS ON" : "HAPTICS OFF",wheelCx+215,124,135,34,hapticsEnabled);
+            String cameraGyroLabel = cameraGyroEnabled ? "CAM GYRO ON" : "CAM GYRO OFF";
+            button(c,cameraGyroLabel,wheelCx+215,164,135,34,cameraGyroEnabled);
             if(customizing)
-                button(c,"RESET LAYOUT",wheelCx+215,164,135,34,false);
+                button(c,"RESET LAYOUT",wheelCx+215,204,135,34,false);
 
             float quickY=wheelCy-radius-34f;
             float quickW=Math.min(112f, Math.max(92f, w * 0.052f));
@@ -934,6 +952,11 @@ public class MainActivity extends Activity implements SensorEventListener {
                 }
                 if(hit(hapticsEnabled ? "HAPTICS ON" : "HAPTICS OFF",x,y)){
                     setHapticsEnabled(!hapticsEnabled);
+                    return true;
+                }
+                String cameraGyroLabel = cameraGyroEnabled ? "CAM GYRO ON" : "CAM GYRO OFF";
+                if(hit(cameraGyroLabel,x,y)){
+                    setCameraGyroEnabled(!cameraGyroEnabled);
                     return true;
                 }
                 if(!customizing && hit("INTERIOR CAM",x,y)){
