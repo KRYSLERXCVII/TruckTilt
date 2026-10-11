@@ -67,9 +67,9 @@ public class MainActivity extends Activity implements SensorEventListener {
     private long cameraGyroStationarySinceNs = 0L;
     private float cameraGyroLastMouseX = 0f;
     private float cameraGyroLastMouseY = 0f;
-    private static final float CAMERA_GYRO_MOUSE_PER_DEG = 5.0f;
-    private static final float CAMERA_GYRO_MAX_YAW_DEG = 35.0f;
-    private static final float CAMERA_GYRO_MAX_PITCH_DEG = 22.0f;
+    private static final float CAMERA_GYRO_MOUSE_PER_DEG = 5.5f;
+    private static final float CAMERA_GYRO_MAX_YAW_DEG = 45.0f;
+    private static final float CAMERA_GYRO_MAX_PITCH_DEG = 30.0f;
 
     UdpClient net;
     volatile int batteryPercent = -1;
