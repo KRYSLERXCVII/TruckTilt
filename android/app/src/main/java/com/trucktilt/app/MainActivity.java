@@ -593,8 +593,9 @@ public class MainActivity extends Activity implements SensorEventListener {
             button(c,"CALIBRATE",wheelCx+111,78,115,38,false);
             button(c,"CUSTOMIZE",wheelCx+215,78,135,38,customizing);
             button(c,hapticsEnabled ? "HAPTICS ON" : "HAPTICS OFF",wheelCx+215,124,135,34,hapticsEnabled);
+            button(c,"INTERIOR CAM (1)",wheelCx+215,164,135,34,false);
             if(customizing)
-                button(c,"RESET LAYOUT",wheelCx+215,164,135,34,false);
+                button(c,"RESET LAYOUT",wheelCx+215,204,135,34,false);
 
             float quickY=wheelCy-radius-34f;
             float quickW=Math.min(112f, Math.max(92f, w * 0.052f));
@@ -695,7 +696,7 @@ public class MainActivity extends Activity implements SensorEventListener {
             c.drawCircle(cx,cy,r,p);
             stroke.setStrokeWidth(11); stroke.setColor(Color.rgb(92,102,110));
             c.drawCircle(cx,cy,r-8,stroke);
-            c.save(); c.rotate(currentSteeringDegrees()/2f,cx,cy);
+            c.save(); c.rotate(currentSteeringDegrees(),cx,cy);
             p.setColor(Color.rgb(67,74,80));
             c.drawRoundRect(cx-r*.10f,cy-r*.92f,cx+r*.10f,cy-r*.32f,10,10,p);
             c.drawRoundRect(cx-r*.92f,cy-r*.10f,cx-r*.32f,cy+r*.10f,10,10,p);
@@ -816,6 +817,10 @@ public class MainActivity extends Activity implements SensorEventListener {
                 }
                 if(hit(hapticsEnabled ? "HAPTICS ON" : "HAPTICS OFF",x,y)){
                     setHapticsEnabled(!hapticsEnabled);
+                    return true;
+                }
+                if(hit("INTERIOR CAM (1)",x,y)){
+                    net.sendInteriorCamera();
                     return true;
                 }
                 if(customizing) {
@@ -954,7 +959,7 @@ public class MainActivity extends Activity implements SensorEventListener {
 
                     float maxAngle=rangeDeg/2f;
                     wheelAngleDeg=clamp(
-                            wheelAngleDeg + delta*(rangeDeg/360f),
+                            wheelAngleDeg + delta,
                             -maxAngle,
                             maxAngle
                     );
@@ -1260,6 +1265,12 @@ public class MainActivity extends Activity implements SensorEventListener {
             }catch(Exception ex){ lastSendError=ex.getClass().getSimpleName(); }
             long now=System.currentTimeMillis();
             if(now-rateWindowStart>=1000){rate=(int)rateWindowPackets;rateWindowPackets=0;rateWindowStart=now;}
+        }
+
+        void sendInteriorCamera(){
+            if(!connected||host==null)return;
+            try{sendRaw("KEY|1",host,hostPort);}
+            catch(Exception ex){lastSendError=ex.getClass().getSimpleName();}
         }
 
         void sendPing(){ if(!connected||host==null)return; try{sendRaw("PING|"+System.currentTimeMillis(),host,hostPort);}catch(Exception ex){lastSendError=ex.getClass().getSimpleName();} }
