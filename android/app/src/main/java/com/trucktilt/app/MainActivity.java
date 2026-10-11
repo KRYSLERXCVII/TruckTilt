@@ -820,7 +820,10 @@ public class MainActivity extends Activity implements SensorEventListener {
                     return true;
                 }
                 if(hit("INTERIOR CAM (1)",x,y)){
+                    // Give immediate local feedback even if the host/game cannot act on the command.
+                    if(hapticsEnabled) performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY);
                     net.sendInteriorCamera();
+                    invalidate();
                     return true;
                 }
                 if(customizing) {
