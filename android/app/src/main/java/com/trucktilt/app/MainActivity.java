@@ -38,9 +38,9 @@ public class MainActivity extends Activity implements SensorEventListener {
     float gyroAngle = 0f, tiltAngle = 0f;
     long lastGyroNs = 0L;
 
-    // Preferred steering source: Android's fused game rotation vector. This
-    // remains magnetometer-free, but its yaw can still drift; the raw-gyro path
-    // below is retained as a fallback when the fused sensor is unavailable.
+    // Preferred steering source: Android's fused rotation vector, which uses
+    // magnetometer heading correction when available. Magnetic interference can
+    // affect it, so the raw-gyro path below remains a fallback.
     private final float[] gameQuatCurrent = new float[4]; // x, y, z, w
     private final float[] gameQuatReference = new float[4]; // calibrated pose
     private boolean gameRotationVectorSeen = false;
@@ -128,7 +128,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         sensors = (SensorManager)getSystemService(SENSOR_SERVICE);
         gyro = sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
         accel = sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
-        gameRotationVector = sensors.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
+        gameRotationVector = sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
 
         view = new ControllerView(this);
         net = new UdpClient();
@@ -189,7 +189,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                 tiltAngle = clamp(pitch, -45f, 45f);
             }
         }
-        else if (e.sensor.getType() == Sensor.TYPE_GAME_ROTATION_VECTOR) {
+        else if (e.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR) {
             handleGameRotationVector(e.values, e.timestamp);
         }
         else if (e.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
@@ -204,7 +204,7 @@ public class MainActivity extends Activity implements SensorEventListener {
             if (dt > 0f && dt < 0.1f) {
                 // Camera gyro remains independent. This raw gyro path supplies
                 // fallback steering and bias learning; fused steering is handled
-                // separately by TYPE_GAME_ROTATION_VECTOR when available.
+                // separately by TYPE_ROTATION_VECTOR when available.
                 updateCameraGyro(e.values[0], e.values[1], dt, e.timestamp);
 
                 float measuredRateDegPerSec = -(float)Math.toDegrees(e.values[2]);
@@ -250,7 +250,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                 // Do not use gravity alignment to correct yaw: the accelerometer
                 // cannot observe rotation around the gravity axis. Keep this raw
                 // gyro integration only as a fallback for devices without the
-                // fused game rotation vector sensor.
+                // fused rotation vector sensor.
                 if (gameRotationVector == null || !gameRotationVectorSeen) {
                     // Smoothly fade the calibration offset over 250 ms. This preserves
                     // continuity at the button press while making the new neutral zero.
@@ -279,7 +279,7 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     /**
      * Tracks relative rotation from the calibrated pose using Android's fused
-     * game rotation vector. Relative Z-axis twist is unwrapped over time so
+     * rotation vector. Relative Z-axis twist is unwrapped over time so
      * supported steering ranges above 180 degrees remain continuous.
      */
     private void handleGameRotationVector(float[] values, long timestampNs) {
@@ -347,8 +347,15 @@ public class MainActivity extends Activity implements SensorEventListener {
             fusedAccumulatedDeg = relativeDeg;
             fusedRelativeInitialized = true;
         } else {
+            // Predict the continuous angle from the sample-to-sample change.
+            // Then re-anchor it to the nearest 360-degree equivalent of the
+            // calibrated relative orientation. This prevents small sensor noise
+            // from accumulating indefinitely and lets the output return toward
+            // calibrated zero when the phone returns to its reference pose.
             float delta = normalizeDelta(relativeDeg - fusedLastRelativeDeg);
-            fusedAccumulatedDeg += delta;
+            float predicted = fusedAccumulatedDeg + delta;
+            float anchored = relativeDeg + 360f * Math.round((predicted - relativeDeg) / 360f);
+            fusedAccumulatedDeg = anchored;
             fusedLastRelativeDeg = relativeDeg;
         }
 
