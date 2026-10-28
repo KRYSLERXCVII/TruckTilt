@@ -642,7 +642,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                         : Color.WHITE;
                 text(c, "BAT " + battery + "%", w - 305, 36, 13, batteryColor, Paint.Align.RIGHT);
             }
-            text(c,"by KRYSLERXCVII  •  v0.16.3",136,37,15,Color.rgb(205,212,220),Paint.Align.LEFT);
+            text(c,"by KRYSLERXCVII  •  v0.16.7",136,37,15,Color.rgb(205,212,220),Paint.Align.LEFT);
 
             donateButton(c,"DONATE",w-82,29,132,38);
 
