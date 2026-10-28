@@ -564,10 +564,6 @@ public class MainActivity extends Activity implements SensorEventListener {
         final HashMap<Integer,String> pointerControls = new HashMap<>();
         final boolean[] buttons = new boolean[33];
 
-        // UI-only switch states. Network button presses remain momentary so the
-        // existing Windows host protocol and DirectInput button indices do not change.
-        final boolean[] switchStates = new boolean[33];
-
         final android.content.SharedPreferences layoutPrefs =
                 getSharedPreferences("trucktilt_layout", MODE_PRIVATE);
         boolean customizing = false;
@@ -871,68 +867,16 @@ public class MainActivity extends Activity implements SensorEventListener {
             text(c,label,r.centerX(),r.centerY()+size*0.34f,size,color,Paint.Align.CENTER);
         }
 
-        boolean isToggleSwitch(int index) {
-            // Only controls that naturally represent an on/off state.
-            // Gear changes, horns, camera actions, wiper speed +/- and similar
-            // one-shot controls intentionally remain momentary.
-            switch(index) {
-                case 0:  // LEFT indicator
-                case 1:  // RIGHT indicator
-                case 2:  // HAZARD
-                case 3:  // LIGHTS
-                case 4:  // HIGH BEAM
-                case 7:  // WIPER
-                case 13: // CRUISE
-                case 16: // PARK BRAKE
-                case 17: // ENGINE
-                case 24: // BEACON
-                case 25: // DIFF LOCK
-                case 27: // WARNING
-                    return true;
-                default:
-                    return false;
-            }
-        }
-
-        void toggleSwitchState(int index) {
-            boolean nextState = !switchStates[index];
-
-            // Turn indicators are mutually exclusive.
-            if(index == 0 && nextState) switchStates[1] = false;
-            if(index == 1 && nextState) switchStates[0] = false;
-
-            switchStates[index] = nextState;
-        }
-
         void drawMappedButton(Canvas c,int index,float cx,float cy,float bw,float bh) {
-            boolean toggle = isToggleSwitch(index);
-            boolean active = buttons[index] || (toggle && switchStates[index]);
+            boolean active=buttons[index];
             RectF r=new RectF(cx-bw/2,cy-bh/2,cx+bw/2,cy+bh/2);
             r=customRect("B"+index,r);
             controls.put("B"+index,new RectF(r));
             p.setStyle(Paint.Style.FILL);
-
-            // Indicators use amber; other active switches use TruckTilt green.
-            int activeColor = (index == 0 || index == 1 || index == 2)
-                    ? Color.rgb(255,179,56) : Color.rgb(139,195,74);
-            p.setColor(active ? activeColor : Color.rgb(27,32,37));
+            p.setColor(active?Color.rgb(139,195,74):Color.rgb(27,32,37));
             c.drawRoundRect(r,9,9,p);
-
-            int labelColor = active ? Color.rgb(7,9,11) : Color.WHITE;
-            if(toggle) {
-                float labelSize = Math.max(8f, Math.min(10f,
-                        Math.min(r.height()*0.27f,
-                                (r.width()*0.62f)/Math.max(4f,buttonNames[index].length()*0.58f))));
-                text(c,buttonNames[index],r.left+8f,
-                        r.centerY()+labelSize*0.34f,labelSize,labelColor,Paint.Align.LEFT);
-                float statusSize = Math.max(8f,Math.min(9f,r.height()*0.24f));
-                text(c,active ? "ON" : "OFF",r.right-7f,
-                        r.centerY()+statusSize*0.34f,statusSize,
-                        active ? labelColor : Color.rgb(157,169,178),Paint.Align.RIGHT);
-            } else {
-                drawControlLabel(c,buttonNames[index],r,9,
-                        buttons[index]?Color.rgb(7,9,11):Color.WHITE);
-            }
+            drawControlLabel(c,buttonNames[index],r,9,
+                    active?Color.rgb(7,9,11):Color.WHITE);
         }
 
         void button(Canvas c,String label,float cx,float cy,float bw,float bh,boolean active) {
@@ -1089,7 +1033,6 @@ public class MainActivity extends Activity implements SensorEventListener {
 
                 for(int i=0;i<32;i++) {
                     if(hit("B"+i,x,y)) {
-                        if(isToggleSwitch(i)) toggleSwitchState(i);
                         buttons[i]=true;
                         pointerControls.put(pointerId,"B"+i);
                         if(hapticsEnabled) {
@@ -1297,14 +1240,17 @@ public class MainActivity extends Activity implements SensorEventListener {
             }
         }
 
-        // Natural virtual-wheel self-centering. A time-based exponential return
-        // keeps the feel consistent across different frame rates and avoids the
-        // old 22% per-frame decay, which snapped the wheel back too quickly.
-        static final float WHEEL_RETURN_TIME_CONSTANT_SEC = 0.55f;
+        // Virtual-wheel self-centering at a steady angular speed.
+        // Unlike exponential decay, the wheel does not return quickly at large
+        // angles and then progressively slow down; degrees-per-second stays
+        // constant, independent of frame rate and selected steering range.
+        static final float WHEEL_RETURN_SPEED_DEG_PER_SEC = 240f;
+        static final float WHEEL_RETURN_EASE_ZONE_DEG = 8f;
+        static final float WHEEL_RETURN_SETTLE_TIME_SEC = 0.07f;
         static final float WHEEL_RETURN_STOP_DEG = 0.12f;
 
         void startWheelReturn(){
-            if(Math.abs(wheelAngleDeg) < WHEEL_RETURN_STOP_DEG){
+            if(Math.abs(wheelAngleDeg) <= WHEEL_RETURN_STOP_DEG){
                 wheelAngleDeg=0f;
                 steer=0f;
                 wheelReturning=false;
@@ -1328,13 +1274,29 @@ public class MainActivity extends Activity implements SensorEventListener {
 
                     float dt = (nowNs - lastFrameNs) / 1_000_000_000f;
                     lastFrameNs = nowNs;
-                    // Ignore unusually long pauses (e.g. app backgrounding) so
-                    // returning from a pause cannot cause a sudden steering jump.
+                    // Clamp long frame gaps to prevent jumps after a pause.
                     dt = clamp(dt, 0f, 0.05f);
-                    float decay = (float)Math.exp(-dt / WHEEL_RETURN_TIME_CONSTANT_SEC);
-                    wheelAngleDeg *= decay;
+                    float absAngle = Math.abs(wheelAngleDeg);
+                    if(absAngle <= WHEEL_RETURN_STOP_DEG){
+                        wheelAngleDeg=0f;
+                        steer=0f;
+                        wheelReturning=false;
+                        invalidate();
+                        return;
+                    }
 
-                    if(Math.abs(wheelAngleDeg) < WHEEL_RETURN_STOP_DEG){
+                    if(absAngle > WHEEL_RETURN_EASE_ZONE_DEG){
+                        // Keep a steady rotation rate through most of the return.
+                        float step = Math.min(absAngle, WHEEL_RETURN_SPEED_DEG_PER_SEC * dt);
+                        wheelAngleDeg -= Math.signum(wheelAngleDeg) * step;
+                    } else {
+                        // Ease only through the final few degrees to avoid a visible
+                        // last-frame snap while keeping the main return speed uniform.
+                        float settle = (float)(1.0 - Math.exp(-dt / WHEEL_RETURN_SETTLE_TIME_SEC));
+                        wheelAngleDeg *= (1f - settle);
+                    }
+
+                    if(Math.abs(wheelAngleDeg) <= WHEEL_RETURN_STOP_DEG){
                         wheelAngleDeg=0f;
                         steer=0f;
                         wheelReturning=false;
