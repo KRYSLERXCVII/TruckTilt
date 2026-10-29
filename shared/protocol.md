@@ -84,6 +84,6 @@ The Android app has a single Haptics ON/OFF setting. When OFF, all incoming hapt
 
 When the SCS telemetry shared-memory map is active, the Windows host sends:
 
-`HUD|gear|engineRpm|engineRpmMax|forwardGearCount`
+`HUD|gear|engineRpm|engineRpmMax|forwardGearCount|speedKmh|userSteer|gameSteer`
 
-The Android app uses this packet to show the current gear and an RPM-based shift prompt. `gear < 0` is reverse, `gear = 0` is neutral, and positive values are forward gears. The shift-up prompt appears at 86% of the engine RPM limit when another forward gear is available; a shift-down prompt appears below 22% RPM in gears above first. These are visual prompts only and do not change game gears automatically.
+The Android app uses this packet to show the current gear, speed, and an RPM-based shift prompt. The optional `userSteer` and `gameSteer` fields are normalized values in the range `-1.0 .. +1.0`; `userSteer` is the raw user steering input and `gameSteer` is the effective steering used by the simulation. The Windows host logs these two values once per second in debug mode. These fields are read-only diagnostics and do not modify controller input. `gear < 0` is reverse, `gear = 0` is neutral, and positive values are forward gears. The shift-up prompt appears at 86% of the engine RPM limit when another forward gear is available; a shift-down prompt appears below 22% RPM in gears above first. These are visual prompts only and do not change game gears automatically.
