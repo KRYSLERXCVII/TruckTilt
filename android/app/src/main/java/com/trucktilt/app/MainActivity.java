@@ -23,7 +23,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * TruckTilt v0.9 — adaptive instant-settling baseline build.
+ * TruckTilt v0.9 — smooth anchor recovery experiment.
  */
 public class MainActivity extends Activity implements SensorEventListener {
     static final int PORT = 45454;
@@ -275,32 +275,32 @@ public class MainActivity extends Activity implements SensorEventListener {
 
                             float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
                             final float REFERENCE_RECOVERY_WINDOW_DEG = 7.5f;
-                            // Gravity orientation repeats after a full turn. Do not let
-                            // this recovery erase intentional multi-turn steering.
+                            // Gravity orientation repeats after a full turn. Never use
+                            // this reference to erase an intentional multi-turn angle.
                             boolean sameTurnBranch = Math.abs(currentError) < 180f;
-                            boolean nearAnchor = referenceDeviationDeg < 2.0f
-                                    && turnSpeedDegPerSec < 2.0f;
                             float proximityWeight = 0f;
+                            float anchorCloseness = 0f;
 
-                            if (sameTurnBranch && nearAnchor) {
-                                // Tight anchor zone: continue settling all the way to zero.
-                                // This deliberately has no 1.5-degree cutoff, which was
-                                // leaving a persistent residual after the main recovery.
-                                proximityWeight = 1f;
-                            } else if (sameTurnBranch
-                                    && Math.abs(currentError) > 1.5f
+                            if (sameTurnBranch
                                     && referenceDeviationDeg < REFERENCE_RECOVERY_WINDOW_DEG) {
-                                float closeness = 1f -
+                                // Continuous falloff avoids a hard gate at the anchor.
+                                // The previous speed gate could make recovery appear to
+                                // pause until the phone almost stopped moving.
+                                anchorCloseness = 1f -
                                         referenceDeviationDeg / REFERENCE_RECOVERY_WINDOW_DEG;
-                                proximityWeight = closeness * closeness;
+                                anchorCloseness = clamp(anchorCloseness, 0f, 1f);
+                                proximityWeight = anchorCloseness * anchorCloseness;
                             }
 
-                            // Smoothly reduce the offset while the phone is near its
-                            // calibrated pose; stronger only inside the stable anchor zone.
-                            float settlingRate = nearAnchor ? 0.10f
-                                    : (turnSpeedDegPerSec < 1f ? 0.080f : 0.030f);
-                            zeroCorrectionOffset += currentError *
-                                    proximityWeight * motionFactor * settlingRate * (dt * 60f);
+                            // Apply correction immediately on approach to the reference,
+                            // damping it smoothly during fast movement rather than gating
+                            // it off. Near the anchor, recovery is stronger and has no
+                            // residual-angle cutoff, so small offsets keep settling.
+                            float speedDamping = clamp(1f - turnSpeedDegPerSec / 18f,
+                                    0.30f, 1f);
+                            float settlingRate = 0.12f + 0.06f * anchorCloseness;
+                            zeroCorrectionOffset += currentError * proximityWeight
+                                    * speedDamping * settlingRate * (dt * 60f);
                         }
                     }
                 }
