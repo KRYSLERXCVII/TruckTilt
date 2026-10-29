@@ -280,15 +280,15 @@ public class MainActivity extends Activity implements SensorEventListener {
                         // drift to settle once the phone is physically back at its anchor.
                         boolean approachingReference =
                                 !Float.isNaN(previousReferenceDeviationDeg)
-                                && referenceDeviationDeg < previousReferenceDeviationDeg - 0.015f;
+                                && referenceDeviationDeg < previousReferenceDeviationDeg - 0.008f;
                         previousReferenceDeviationDeg = referenceDeviationDeg;
 
                         float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
                         // Gravity repeats after a full turn; don't erase intentional
                         // multi-turn steering based on a repeated gravity orientation.
                         boolean sameTurnBranch = Math.abs(currentError) < 180f;
-                        final float REFERENCE_RECOVERY_WINDOW_DEG = 10.0f;
-                        final float TIGHT_NEUTRAL_ZONE_DEG = 1.25f;
+                        final float REFERENCE_RECOVERY_WINDOW_DEG = 12.5f;
+                        final float TIGHT_NEUTRAL_ZONE_DEG = 1.75f;
                         boolean physicallyNearNeutral =
                                 referenceDeviationDeg <= TIGHT_NEUTRAL_ZONE_DEG;
                         boolean recoveryAllowed = sameTurnBranch
@@ -304,9 +304,9 @@ public class MainActivity extends Activity implements SensorEventListener {
                             // Smoothly damp correction during movement. At the true
                             // neutral pose use the stronger settling rate to clear the
                             // last residual offset promptly; never force a broad small-angle reset.
-                            float speedDamping = clamp(1f - turnSpeedDegPerSec / 30f,
-                                    0.55f, 1f);
-                            float settlingRate = physicallyNearNeutral ? 0.24f : 0.18f;
+                            float speedDamping = clamp(1f - turnSpeedDegPerSec / 35f,
+                                    0.65f, 1f);
+                            float settlingRate = physicallyNearNeutral ? 0.32f : 0.23f;
                             zeroCorrectionOffset += currentError * proximityWeight
                                     * speedDamping * settlingRate * (dt * 60f);
                         }
