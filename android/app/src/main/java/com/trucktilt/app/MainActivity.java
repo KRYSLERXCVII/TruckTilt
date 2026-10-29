@@ -48,6 +48,9 @@ public class MainActivity extends Activity implements SensorEventListener {
     // calibrated physical orientation. The gyro filter remains responsible
     // for smooth steering; this offset only corrects the accumulated error.
     float zeroCorrectionOffset = 0f;
+    // Used to distinguish a phone returning toward its calibrated pose from
+    // a small intentional angle being held during a gentle curve.
+    float previousReferenceDeviationDeg = Float.NaN;
     float gyroBiasDegPerSec = 0f;
     float filteredGyroRateDegPerSec = 0f;
     boolean gyroRateFilterInitialized = false;
@@ -240,69 +243,74 @@ public class MainActivity extends Activity implements SensorEventListener {
 
                 rawGyroIntegratedDeg += filteredGyroRateDegPerSec * dt;
 
-                // EXPERIMENTAL TEST BUILD: recovery trigger/gain increased;
-                // gyro integration, filtering, calibration and controls remain unchanged.
-                // Soft return-to-reference recovery:
-                // retain the filtered gyro response, but gently correct accumulated
-                // angle error when the phone comes back near its calibrated physical zone.
-                // A modest trigger avoids pulling every small intentional steering input
-                // toward zero; a slower gain prevents the abrupt snap of the older build.
+                // Anchor recovery refinement:
+                // Only correct while the phone is moving back toward the calibrated
+                // pose, or when it is extremely close to that pose. This avoids pulling
+                // a deliberate 1-4 degree curve toward zero just because it is small.
+                // Once the phone returns to neutral, a slightly stronger smooth settle
+                // removes residual accumulated gyro offset without requiring a long hold.
                 if (calibrationGravity != null && filteredGravity != null
                         && gravityMagnitudePlausible) {
                     float turnSpeedDegPerSec = Math.abs(correctedRate);
-                    float motionFactor = Math.max(0.15f,
-                            1f - turnSpeedDegPerSec / 5f);
+                    float dot =
+                            calibrationGravity[0] * filteredGravity[0] +
+                            calibrationGravity[1] * filteredGravity[1] +
+                            calibrationGravity[2] * filteredGravity[2];
 
-                    if (motionFactor > 0.01f) {
-                        float dot =
-                                calibrationGravity[0] * filteredGravity[0] +
-                                calibrationGravity[1] * filteredGravity[1] +
-                                calibrationGravity[2] * filteredGravity[2];
+                    float normCalib = (float)Math.sqrt(
+                            calibrationGravity[0] * calibrationGravity[0] +
+                            calibrationGravity[1] * calibrationGravity[1] +
+                            calibrationGravity[2] * calibrationGravity[2]);
+                    float normCurr = (float)Math.sqrt(
+                            filteredGravity[0] * filteredGravity[0] +
+                            filteredGravity[1] * filteredGravity[1] +
+                            filteredGravity[2] * filteredGravity[2]);
 
-                        float normCalib = (float)Math.sqrt(
-                                calibrationGravity[0] * calibrationGravity[0] +
-                                calibrationGravity[1] * calibrationGravity[1] +
-                                calibrationGravity[2] * calibrationGravity[2]);
-                        float normCurr = (float)Math.sqrt(
-                                filteredGravity[0] * filteredGravity[0] +
-                                filteredGravity[1] * filteredGravity[1] +
-                                filteredGravity[2] * filteredGravity[2]);
+                    if (normCalib > 0f && normCurr > 0f) {
+                        float cosTheta = clamp(dot / (normCalib * normCurr), -1f, 1f);
+                        float referenceDeviationDeg =
+                                (float)Math.toDegrees(Math.acos(cosTheta));
 
-                        if (normCalib > 0f && normCurr > 0f) {
-                            float cosTheta = clamp(dot / (normCalib * normCurr), -1f, 1f);
-                            float referenceDeviationDeg =
-                                    (float)Math.toDegrees(Math.acos(cosTheta));
+                        // A falling gravity deviation indicates return toward neutral.
+                        // The very small neutral zone also permits stationary residual
+                        // drift to settle once the phone is physically back at its anchor.
+                        boolean approachingReference =
+                                !Float.isNaN(previousReferenceDeviationDeg)
+                                && referenceDeviationDeg < previousReferenceDeviationDeg - 0.015f;
+                        previousReferenceDeviationDeg = referenceDeviationDeg;
 
-                            float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
-                            final float REFERENCE_RECOVERY_WINDOW_DEG = 7.5f;
-                            // Gravity orientation repeats after a full turn. Never use
-                            // this reference to erase an intentional multi-turn angle.
-                            boolean sameTurnBranch = Math.abs(currentError) < 180f;
-                            float proximityWeight = 0f;
-                            float anchorCloseness = 0f;
+                        float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
+                        // Gravity repeats after a full turn; don't erase intentional
+                        // multi-turn steering based on a repeated gravity orientation.
+                        boolean sameTurnBranch = Math.abs(currentError) < 180f;
+                        final float REFERENCE_RECOVERY_WINDOW_DEG = 5.5f;
+                        final float TIGHT_NEUTRAL_ZONE_DEG = 0.80f;
+                        boolean physicallyNearNeutral =
+                                referenceDeviationDeg <= TIGHT_NEUTRAL_ZONE_DEG;
+                        boolean recoveryAllowed = sameTurnBranch
+                                && (approachingReference || physicallyNearNeutral)
+                                && referenceDeviationDeg < REFERENCE_RECOVERY_WINDOW_DEG;
 
-                            if (sameTurnBranch
-                                    && referenceDeviationDeg < REFERENCE_RECOVERY_WINDOW_DEG) {
-                                // Continuous falloff avoids a hard gate at the anchor.
-                                // The previous speed gate could make recovery appear to
-                                // pause until the phone almost stopped moving.
-                                anchorCloseness = 1f -
-                                        referenceDeviationDeg / REFERENCE_RECOVERY_WINDOW_DEG;
-                                anchorCloseness = clamp(anchorCloseness, 0f, 1f);
-                                proximityWeight = anchorCloseness * anchorCloseness;
-                            }
+                        if (recoveryAllowed) {
+                            float anchorCloseness = clamp(
+                                    1f - referenceDeviationDeg / REFERENCE_RECOVERY_WINDOW_DEG,
+                                    0f, 1f);
+                            float proximityWeight = anchorCloseness * anchorCloseness;
 
-                            // Apply correction immediately on approach to the reference,
-                            // damping it smoothly during fast movement rather than gating
-                            // it off. Near the anchor, recovery is stronger and has no
-                            // residual-angle cutoff, so small offsets keep settling.
+                            // Smoothly damp correction during movement. At the true
+                            // neutral pose use the stronger settling rate to clear the
+                            // last residual offset promptly; never force a broad small-angle reset.
                             float speedDamping = clamp(1f - turnSpeedDegPerSec / 18f,
                                     0.30f, 1f);
-                            float settlingRate = 0.12f + 0.06f * anchorCloseness;
+                            float settlingRate = physicallyNearNeutral ? 0.20f : 0.12f;
                             zeroCorrectionOffset += currentError * proximityWeight
                                     * speedDamping * settlingRate * (dt * 60f);
                         }
+                    } else {
+                        previousReferenceDeviationDeg = Float.NaN;
                     }
+                } else {
+                    previousReferenceDeviationDeg = Float.NaN;
                 }
 
                 // Smoothly fade the calibration offset over 250 ms. This preserves
@@ -558,6 +566,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         calibrationFadeStartNs = android.os.SystemClock.elapsedRealtimeNanos();
         rawGyroIntegratedDeg = 0f;
         zeroCorrectionOffset = 0f;
+        previousReferenceDeviationDeg = Float.NaN;
         filteredGyroRateDegPerSec = 0f;
         gyroRateFilterInitialized = false;
         lastGyroNs = 0L;
