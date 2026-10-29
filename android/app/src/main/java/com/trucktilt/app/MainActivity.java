@@ -287,8 +287,8 @@ public class MainActivity extends Activity implements SensorEventListener {
                         // Gravity repeats after a full turn; don't erase intentional
                         // multi-turn steering based on a repeated gravity orientation.
                         boolean sameTurnBranch = Math.abs(currentError) < 180f;
-                        final float REFERENCE_RECOVERY_WINDOW_DEG = 5.5f;
-                        final float TIGHT_NEUTRAL_ZONE_DEG = 0.80f;
+                        final float REFERENCE_RECOVERY_WINDOW_DEG = 10.0f;
+                        final float TIGHT_NEUTRAL_ZONE_DEG = 1.25f;
                         boolean physicallyNearNeutral =
                                 referenceDeviationDeg <= TIGHT_NEUTRAL_ZONE_DEG;
                         boolean recoveryAllowed = sameTurnBranch
@@ -299,14 +299,14 @@ public class MainActivity extends Activity implements SensorEventListener {
                             float anchorCloseness = clamp(
                                     1f - referenceDeviationDeg / REFERENCE_RECOVERY_WINDOW_DEG,
                                     0f, 1f);
-                            float proximityWeight = anchorCloseness * anchorCloseness;
+                            float proximityWeight = anchorCloseness * (0.65f + 0.35f * anchorCloseness);
 
                             // Smoothly damp correction during movement. At the true
                             // neutral pose use the stronger settling rate to clear the
                             // last residual offset promptly; never force a broad small-angle reset.
-                            float speedDamping = clamp(1f - turnSpeedDegPerSec / 18f,
-                                    0.30f, 1f);
-                            float settlingRate = physicallyNearNeutral ? 0.20f : 0.12f;
+                            float speedDamping = clamp(1f - turnSpeedDegPerSec / 30f,
+                                    0.55f, 1f);
+                            float settlingRate = physicallyNearNeutral ? 0.24f : 0.18f;
                             zeroCorrectionOffset += currentError * proximityWeight
                                     * speedDamping * settlingRate * (dt * 60f);
                         }
