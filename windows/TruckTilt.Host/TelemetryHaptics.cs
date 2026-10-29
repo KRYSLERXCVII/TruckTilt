@@ -31,6 +31,12 @@ internal sealed class TelemetryHaptics : IDisposable
     private const int PollMs = 50;
 
     private readonly Action<string> _sendHaptic;
+    private readonly object _steeringSync = new();
+    private bool _hasActiveSteeringSample;
+    private float _lastUserSteer;
+    private float _lastGameSteer;
+    private DateTime _lastSteeringSampleUtc = DateTime.MinValue;
+    private const float CalibrationNeutralTolerance = 0.025f;
     private readonly CancellationTokenSource _cts = new();
     private Task? _loop;
 
@@ -52,6 +58,27 @@ internal sealed class TelemetryHaptics : IDisposable
     public void Start()
     {
         _loop ??= Task.Run(LoopAsync);
+    }
+
+    public string GetCalibrationResponse()
+    {
+        lock (_steeringSync)
+        {
+            if (!_hasActiveSteeringSample ||
+                (DateTime.UtcNow - _lastSteeringSampleUtc).TotalMilliseconds > 500)
+                return "CALIBRATION|REJECTED|NO_ACTIVE_TELEMETRY";
+
+            // Calibration is allowed only when game telemetry is already neutral.
+            // Do not force the steering axis to zero while the truck is turning.
+            if (Math.Abs(_lastGameSteer) > CalibrationNeutralTolerance)
+                return "CALIBRATION|REJECTED|GAME_NOT_CENTERED|" +
+                       _lastUserSteer.ToString("0.000", CultureInfo.InvariantCulture) + "|" +
+                       _lastGameSteer.ToString("0.000", CultureInfo.InvariantCulture);
+
+            return "CALIBRATION|ACCEPTED|GAME_CENTERED|" +
+                   _lastUserSteer.ToString("0.000", CultureInfo.InvariantCulture) + "|" +
+                   _lastGameSteer.ToString("0.000", CultureInfo.InvariantCulture);
+        }
     }
 
     private async Task LoopAsync()
@@ -143,6 +170,13 @@ internal sealed class TelemetryHaptics : IDisposable
         if (!float.IsFinite(gameSteer)) gameSteer = 0f;
         userSteer = Math.Clamp(userSteer, -1f, 1f);
         gameSteer = Math.Clamp(gameSteer, -1f, 1f);
+        lock (_steeringSync)
+        {
+            _lastUserSteer = userSteer;
+            _lastGameSteer = gameSteer;
+            _lastSteeringSampleUtc = DateTime.UtcNow;
+            _hasActiveSteeringSample = true;
+        }
 
         // HUD packet: gear, RPM, RPM limit, forward gear count, speed km/h,
         // raw user steering, and effective in-game steering (both -1..+1).
@@ -268,6 +302,13 @@ internal sealed class TelemetryHaptics : IDisposable
 
     private void ResetState(bool sendRumbleStop)
     {
+        lock (_steeringSync)
+        {
+            _hasActiveSteeringSample = false;
+            _lastSteeringSampleUtc = DateTime.MinValue;
+            _lastUserSteer = 0f;
+            _lastGameSteer = 0f;
+        }
         if (sendRumbleStop && _offRoadLatched)
             _sendHaptic("HAPTIC|RUMBLE_STOP");
 
