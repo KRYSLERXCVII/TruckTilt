@@ -137,9 +137,12 @@ public class MainActivity extends Activity implements SensorEventListener {
         sensors = (SensorManager)getSystemService(SENSOR_SERVICE);
         gyro = sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
         accel = sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
-        // Fused orientation sensor; magnetometer correction can reduce long-term
-        // heading drift but may be affected by magnetic interference near the phone.
-        rotationVector = sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+        // Prefer the game rotation vector: it avoids magnetometer-driven heading
+        // corrections that can couple nearby magnetic interference into steering.
+        // Fall back to the full rotation vector on devices without this sensor.
+        rotationVector = sensors.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
+        if (rotationVector == null)
+            rotationVector = sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
 
         view = new ControllerView(this);
         net = new UdpClient();
@@ -271,7 +274,8 @@ public class MainActivity extends Activity implements SensorEventListener {
 
                 if (rotationVector == null) updateSteeringOutput(e.timestamp);
             }
-        } else if (e.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR) {
+        } else if (e.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR
+                || e.sensor.getType() == Sensor.TYPE_GAME_ROTATION_VECTOR) {
             float[] q = new float[4];
             SensorManager.getQuaternionFromVector(q, e.values);
             currentRotationQuaternion = q;
@@ -281,9 +285,10 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     /**
-     * Extract signed twist around the phone's local Z axis from a relative quaternion.
-     * Quaternion order is w,x,y,z. Twist extraction deliberately ignores the swing
-     * component, so pitch/roll do not directly become steering input.
+     * Extract only twist around the calibrated phone's local Z axis (normal to
+     * the screen). Swing-twist decomposition projects the relative quaternion's
+     * vector part onto that axis, rejecting pitch/roll swing instead of treating
+     * the full 3D orientation change as steering.
      */
     private void updateRotationVectorSteering(long timestampNs) {
         if (currentRotationQuaternion == null) return;
@@ -298,25 +303,24 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         float[] c = calibratedRotationQuaternion;
         float[] q = currentRotationQuaternion;
-        // relative = conjugate(calibrated) * current
+        // Relative orientation in the calibrated phone frame: conjugate(c) * q.
         float rw = c[0] * q[0] + c[1] * q[1] + c[2] * q[2] + c[3] * q[3];
-        float rx = c[0] * q[1] - c[1] * q[0] - c[2] * q[3] + c[3] * q[2];
-        float ry = c[0] * q[2] + c[1] * q[3] - c[2] * q[0] - c[3] * q[1];
         float rz = c[0] * q[3] - c[1] * q[2] + c[2] * q[1] - c[3] * q[0];
 
+        // Twist about calibrated local Z only. X/Y swing (pitch/roll) is discarded.
         float twistNorm = (float)Math.sqrt(rw * rw + rz * rz);
         if (twistNorm < 1.0e-6f) return;
         rw /= twistNorm;
         rz /= twistNorm;
-        // Match the established TruckTilt steering convention: positive physical
-        // twist must produce the same direction as the previous gyro Z-axis path.
-        float twistDeg = -normalizeDelta((float)Math.toDegrees(2.0 * Math.atan2(rz, rw)));
+        // Negative sign preserves TruckTilt's established left/right convention.
+        float twistDeg = -normalizeDelta(
+                (float)Math.toDegrees(2.0 * Math.atan2(rz, rw)));
 
         if (Float.isNaN(previousRotationTwistDeg)) {
             previousRotationTwistDeg = twistDeg;
         } else {
             float delta = normalizeDelta(twistDeg - previousRotationTwistDeg);
-            // Reject only impossible single-sample jumps; keep normal small-angle motion.
+            // Reject impossible single-sample jumps; retain ordinary small movements.
             if (Math.abs(delta) < 90f) rotationVectorIntegratedDeg += delta;
             previousRotationTwistDeg = twistDeg;
         }
