@@ -53,6 +53,8 @@ public class MainActivity extends Activity implements SensorEventListener {
     // Used to distinguish a phone returning toward its calibrated pose from
     // a small intentional angle being held during a gentle curve.
     float previousReferenceDeviationDeg = Float.NaN;
+    // Arm recovery after meaningful turns only; preserve tiny intentional angles.
+    boolean referenceRecoveryArmed = false;
     float gyroBiasDegPerSec = 0f;
     float filteredGyroRateDegPerSec = 0f;
     boolean gyroRateFilterInitialized = false;
@@ -291,9 +293,16 @@ public class MainActivity extends Activity implements SensorEventListener {
                         final float TIGHT_NEUTRAL_ZONE_DEG = 0.60f;
                         boolean physicallyNearNeutral =
                                 referenceDeviationDeg <= TIGHT_NEUTRAL_ZONE_DEG;
-                        boolean returningFromMeaningfulTurn = approachingReference
-                                && referenceDeviationDeg >= 5.0f;
-                        boolean recoveryAllowed = sameTurnBranch
+                        // Arm only after a meaningful turn, so a deliberate 1-5 degree
+                        // steering angle near calibrated zero is not pulled back.
+                        if (referenceDeviationDeg >= 5.0f) {
+                            referenceRecoveryArmed = true;
+                        }
+                        boolean returningFromMeaningfulTurn = referenceRecoveryArmed
+                                && approachingReference
+                                && referenceDeviationDeg >= TIGHT_NEUTRAL_ZONE_DEG;
+                        boolean recoveryAllowed = referenceRecoveryArmed
+                                && sameTurnBranch
                                 && (returningFromMeaningfulTurn || physicallyNearNeutral)
                                 && referenceDeviationDeg < REFERENCE_RECOVERY_WINDOW_DEG;
 
@@ -317,9 +326,14 @@ public class MainActivity extends Activity implements SensorEventListener {
                                     proximityWeight * speedDamping * settlingRate * (dt * 60f),
                                     0f, 0.70f);
                             zeroCorrectionOffset += currentError * correctionGain;
+                            // Disarm once residual error has settled at the calibrated pose.
+                            if (physicallyNearNeutral && Math.abs(currentError) < 0.10f) {
+                                referenceRecoveryArmed = false;
+                            }
                         }
                     } else {
                         previousReferenceDeviationDeg = Float.NaN;
+        referenceRecoveryArmed = false;
                     }
                 } else {
                     previousReferenceDeviationDeg = Float.NaN;
@@ -641,6 +655,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         rawGyroIntegratedDeg = 0f;
         zeroCorrectionOffset = 0f;
         previousReferenceDeviationDeg = Float.NaN;
+        referenceRecoveryArmed = false;
         filteredGyroRateDegPerSec = 0f;
         gyroRateFilterInitialized = false;
         lastGyroNs = 0L;
