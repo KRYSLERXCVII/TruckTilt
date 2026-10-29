@@ -34,7 +34,14 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     ControllerView view;
     SensorManager sensors;
-    Sensor gyro, accel;
+    Sensor gyro, accel, rotationVector;
+    // Rotation-vector steering prototype: measure orientation relative to the
+    // manually calibrated quaternion instead of relying only on integrated gyro rate.
+    float[] currentRotationQuaternion = null; // Android quaternion order: w, x, y, z
+    float[] calibratedRotationQuaternion = null;
+    float previousRotationTwistDeg = Float.NaN;
+    float rotationVectorIntegratedDeg = 0f;
+    boolean rotationVectorSteeringActive = false;
 
     float gyroAngle = 0f, tiltAngle = 0f;
     long lastGyroNs = 0L;
@@ -130,6 +137,9 @@ public class MainActivity extends Activity implements SensorEventListener {
         sensors = (SensorManager)getSystemService(SENSOR_SERVICE);
         gyro = sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
         accel = sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+        // Fused orientation sensor; magnetometer correction can reduce long-term
+        // heading drift but may be affected by magnetic interference near the phone.
+        rotationVector = sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
 
         view = new ControllerView(this);
         net = new UdpClient();
@@ -157,6 +167,8 @@ public class MainActivity extends Activity implements SensorEventListener {
         super.onResume();
         if (gyro != null) sensors.registerListener(this, gyro, SensorManager.SENSOR_DELAY_GAME);
         if (accel != null) sensors.registerListener(this, accel, SensorManager.SENSOR_DELAY_GAME);
+        if (rotationVector != null)
+            sensors.registerListener(this, rotationVector, SensorManager.SENSOR_DELAY_GAME);
     }
 
     @Override protected void onPause() {
@@ -247,39 +259,94 @@ public class MainActivity extends Activity implements SensorEventListener {
                     stationarySinceNs = 0L;
                 }
 
-                rawGyroIntegratedDeg += filteredGyroRateDegPerSec * dt;
+                // Keep the original gyro integrator as a fallback only on devices
+                // that do not provide a rotation-vector sensor.
+                if (rotationVector == null)
+                    rawGyroIntegratedDeg += filteredGyroRateDegPerSec * dt;
 
                 // No automatic angle/gravity-based recentering. Calibration defines
                 // zero; after that, steering follows integrated gyro movement. SCS
                 // telemetry is game-state feedback and must not pull phone input toward
                 // zero or alter the calibrated steering angle.
 
-                // Smoothly fade the calibration offset over 250 ms. This preserves
-                // continuity at the button press while making the new neutral zero.
-                float fade = 1f;
-                if (calibrationFadeStartNs != 0L) {
-                    float elapsed = (e.timestamp - calibrationFadeStartNs) /
-                            (float) CALIBRATION_FADE_NS;
-                    if (elapsed >= 1f) {
-                        calibrationFadeOffsetDeg = 0f;
-                        calibrationFadeStartNs = 0L;
-                    } else {
-                        float t = clamp(elapsed, 0f, 1f);
-                        fade = t * t * (3f - 2f * t); // smoothstep
-                    }
-                }
-                float outputOffset = calibrationFadeStartNs == 0L
-                        ? calibrationFadeOffsetDeg : calibrationFadeOffsetDeg * (1f - fade);
-                float half = view == null ? 450f : view.rangeDeg / 2f;
-                gyroAngle = clamp(rawGyroIntegratedDeg - zeroCorrectionOffset + outputOffset,
-                        -half, half);
+                if (rotationVector == null) updateSteeringOutput(e.timestamp);
             }
+        } else if (e.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR) {
+            float[] q = new float[4];
+            SensorManager.getQuaternionFromVector(q, e.values);
+            currentRotationQuaternion = q;
+            updateRotationVectorSteering(e.timestamp);
         }
         if (view != null) view.invalidate();
     }
 
     /**
-     * Converts phone gyro rotation into relative mouse deltas for the interior
+     * Extract signed twist around the phone's local Z axis from a relative quaternion.
+     * Quaternion order is w,x,y,z. Twist extraction deliberately ignores the swing
+     * component, so pitch/roll do not directly become steering input.
+     */
+    private void updateRotationVectorSteering(long timestampNs) {
+        if (currentRotationQuaternion == null) return;
+        if (calibratedRotationQuaternion == null) {
+            calibratedRotationQuaternion = currentRotationQuaternion.clone();
+            previousRotationTwistDeg = Float.NaN;
+            rotationVectorIntegratedDeg = 0f;
+            rotationVectorSteeringActive = true;
+            updateSteeringOutput(timestampNs);
+            return;
+        }
+
+        float[] c = calibratedRotationQuaternion;
+        float[] q = currentRotationQuaternion;
+        // relative = conjugate(calibrated) * current
+        float rw = c[0] * q[0] + c[1] * q[1] + c[2] * q[2] + c[3] * q[3];
+        float rx = c[0] * q[1] - c[1] * q[0] - c[2] * q[3] + c[3] * q[2];
+        float ry = c[0] * q[2] + c[1] * q[3] - c[2] * q[0] - c[3] * q[1];
+        float rz = c[0] * q[3] - c[1] * q[2] + c[2] * q[1] - c[3] * q[0];
+
+        float twistNorm = (float)Math.sqrt(rw * rw + rz * rz);
+        if (twistNorm < 1.0e-6f) return;
+        rw /= twistNorm;
+        rz /= twistNorm;
+        float twistDeg = normalizeDelta((float)Math.toDegrees(2.0 * Math.atan2(rz, rw)));
+
+        if (Float.isNaN(previousRotationTwistDeg)) {
+            previousRotationTwistDeg = twistDeg;
+        } else {
+            float delta = normalizeDelta(twistDeg - previousRotationTwistDeg);
+            // Reject only impossible single-sample jumps; keep normal small-angle motion.
+            if (Math.abs(delta) < 90f) rotationVectorIntegratedDeg += delta;
+            previousRotationTwistDeg = twistDeg;
+        }
+
+        rotationVectorSteeringActive = true;
+        updateSteeringOutput(timestampNs);
+    }
+
+    private void updateSteeringOutput(long timestampNs) {
+        float fade = 1f;
+        if (calibrationFadeStartNs != 0L) {
+            float elapsed = (timestampNs - calibrationFadeStartNs) /
+                    (float) CALIBRATION_FADE_NS;
+            if (elapsed >= 1f) {
+                calibrationFadeOffsetDeg = 0f;
+                calibrationFadeStartNs = 0L;
+            } else {
+                float t = clamp(elapsed, 0f, 1f);
+                fade = t * t * (3f - 2f * t);
+            }
+        }
+        float outputOffset = calibrationFadeStartNs == 0L
+                ? calibrationFadeOffsetDeg : calibrationFadeOffsetDeg * (1f - fade);
+        float sourceAngle = rotationVectorSteeringActive
+                ? rotationVectorIntegratedDeg
+                : rawGyroIntegratedDeg - zeroCorrectionOffset;
+        float half = view == null ? 450f : view.rangeDeg / 2f;
+        gyroAngle = clamp(sourceAngle + outputOffset, -half, half);
+    }
+
+    /**
+     * Converts phone gyro rotation into relative mouse deltas for the interior camera. into relative mouse deltas for the interior
      * camera. Entering virtual-wheel mode establishes a fresh neutral reference;
      * rotating back to that orientation emits reverse deltas and restores the view.
      * This method intentionally does not read or write any steering state.
@@ -569,6 +636,11 @@ public class MainActivity extends Activity implements SensorEventListener {
         calibrationFadeStartNs = 0L;
         rawGyroIntegratedDeg = 0f;
         zeroCorrectionOffset = 0f;
+        rotationVectorIntegratedDeg = 0f;
+        previousRotationTwistDeg = Float.NaN;
+        calibratedRotationQuaternion = currentRotationQuaternion == null
+                ? null : currentRotationQuaternion.clone();
+        rotationVectorSteeringActive = calibratedRotationQuaternion != null;
         previousReferenceDeviationDeg = Float.NaN;
         referenceRecoveryArmed = false;
         filteredGyroRateDegPerSec = 0f;
@@ -597,6 +669,11 @@ public class MainActivity extends Activity implements SensorEventListener {
         calibrationFadeStartNs = android.os.SystemClock.elapsedRealtimeNanos();
         rawGyroIntegratedDeg = 0f;
         zeroCorrectionOffset = 0f;
+        rotationVectorIntegratedDeg = 0f;
+        previousRotationTwistDeg = Float.NaN;
+        calibratedRotationQuaternion = currentRotationQuaternion == null
+                ? null : currentRotationQuaternion.clone();
+        rotationVectorSteeringActive = calibratedRotationQuaternion != null;
         previousReferenceDeviationDeg = Float.NaN;
         filteredGyroRateDegPerSec = 0f;
         gyroRateFilterInitialized = false;
