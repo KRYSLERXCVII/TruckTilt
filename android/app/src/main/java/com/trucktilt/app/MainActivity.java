@@ -599,7 +599,8 @@ public class MainActivity extends Activity implements SensorEventListener {
         calibrationRequestStartedMs = System.currentTimeMillis();
         if (!net.requestCalibration()) {
             calibrationRequestPending = false;
-            Toast.makeText(this, "Could not request game calibration", Toast.LENGTH_LONG).show();
+            String detail = net.lastSendError == null ? "unknown network error" : net.lastSendError;
+            Toast.makeText(this, "Could not send calibration request (" + detail + ")", Toast.LENGTH_LONG).show();
             return;
         }
         Toast.makeText(this, "Checking game steering center…", Toast.LENGTH_SHORT).show();
@@ -1550,12 +1551,21 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
 
         boolean requestCalibration() {
-            if (!connected || host == null) return false;
+            if (!connected) {
+                lastSendError = "host_not_connected";
+                return false;
+            }
+            if (host == null) {
+                lastSendError = "host_address_missing";
+                connected = false;
+                return false;
+            }
             try {
                 sendRaw("CALIBRATE|" + System.currentTimeMillis(), host, hostPort);
+                lastSendError = null;
                 return true;
             } catch (Exception ex) {
-                lastSendError = ex.getClass().getSimpleName();
+                lastSendError = ex.getClass().getSimpleName() + (ex.getMessage() == null ? "" : ": " + ex.getMessage());
                 return false;
             }
         }
