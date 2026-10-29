@@ -2,6 +2,7 @@ package com.trucktilt.app;
 
 import android.app.Activity;
 import android.os.Bundle;
+import android.os.StrictMode;
 import android.os.Build;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
@@ -603,6 +604,14 @@ public class MainActivity extends Activity implements SensorEventListener {
         // raises NetworkOnMainThreadException).
         final UdpClient calibrationNet = net;
         networkExecutor.execute(() -> {
+            // StrictMode policy can be inherited when this pool's worker thread
+            // is first created from the UI thread. Permit networking on this
+            // worker only; the UDP send remains off the UI thread.
+            StrictMode.setThreadPolicy(
+                    new StrictMode.ThreadPolicy.Builder(StrictMode.getThreadPolicy())
+                            .permitNetwork()
+                            .build());
+
             if (!calibrationNet.requestCalibration()) {
                 String detail = calibrationNet.lastSendError == null
                         ? "unknown network error" : calibrationNet.lastSendError;
