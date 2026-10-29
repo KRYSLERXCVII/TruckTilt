@@ -309,8 +309,14 @@ public class MainActivity extends Activity implements SensorEventListener {
                             float speedDamping = clamp(1f - turnSpeedDegPerSec / 35f,
                                     0.65f, 1f);
                             float settlingRate = physicallyNearNeutral ? 0.32f : 0.23f;
-                            zeroCorrectionOffset += currentError * proximityWeight
-                                    * speedDamping * settlingRate * (dt * 60f);
+                            // Bound each correction step below 1.0 so a long sensor-frame
+                            // gap can never push the zero offset past the current error.
+                            // This prevents a left-side residual from being over-corrected
+                            // into a right-side steering command when the phone returns home.
+                            float correctionGain = clamp(
+                                    proximityWeight * speedDamping * settlingRate * (dt * 60f),
+                                    0f, 0.70f);
+                            zeroCorrectionOffset += currentError * correctionGain;
                         }
                     } else {
                         previousReferenceDeviationDeg = Float.NaN;
