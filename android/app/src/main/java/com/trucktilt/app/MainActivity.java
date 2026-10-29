@@ -292,7 +292,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                         boolean physicallyNearNeutral =
                                 referenceDeviationDeg <= TIGHT_NEUTRAL_ZONE_DEG;
                         boolean returningFromMeaningfulTurn = approachingReference
-                                && referenceDeviationDeg >= 3.0f;
+                                && referenceDeviationDeg >= 5.0f;
                         boolean recoveryAllowed = sameTurnBranch
                                 && (returningFromMeaningfulTurn || physicallyNearNeutral)
                                 && referenceDeviationDeg < REFERENCE_RECOVERY_WINDOW_DEG;
