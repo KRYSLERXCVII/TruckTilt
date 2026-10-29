@@ -89,12 +89,13 @@ When the SCS telemetry shared-memory map is active, the Windows host sends:
 The Android app uses this packet to show the current gear, speed, and an RPM-based shift prompt. The optional `userSteer` and `gameSteer` fields are normalized values in the range `-1.0 .. +1.0`; `userSteer` is the raw user steering input and `gameSteer` is the effective steering used by the simulation. The Windows host logs these two values once per second in debug mode. These fields are read-only diagnostics and do not modify controller input. `gear < 0` is reverse, `gear = 0` is neutral, and positive values are forward gears. The shift-up prompt appears at 86% of the engine RPM limit when another forward gear is available; a shift-down prompt appears below 22% RPM in gears above first. These are visual prompts only and do not change game gears automatically.
 
 
-## Telemetry-anchored gyro calibration
+## Gyro calibration and telemetry check
 
-The phone requests calibration with `CALIBRATE|timestampMs`. The host replies with one of:
+When the user presses Calibrate in gyro mode, the phone immediately sets the current phone orientation as zero and outputs neutral steering. This local calibration must never be blocked by the game's previous steering value.
 
-- `CALIBRATION|ACCEPTED|GAME_CENTERED|userSteer|gameSteer` — active telemetry is fresh and game steering is within ±0.025 of neutral.
-- `CALIBRATION|REJECTED|GAME_NOT_CENTERED|userSteer|gameSteer` — no calibration is applied; center the in-game steering first.
+The phone then requests a telemetry check with `CALIBRATE|timestampMs`. The host replies with one of:
+
+- `CALIBRATION|ACCEPTED|TELEMETRY_ACTIVE|userSteer|gameSteer` — a fresh SCS telemetry sample is available; the steering fields are diagnostic only.
 - `CALIBRATION|REJECTED|NO_ACTIVE_TELEMETRY` — no fresh active SCS telemetry sample is available.
 
-Calibration never forces game steering to zero. It only succeeds when telemetry already reports neutral. If the host is disconnected, the phone retains its local-calibration fallback and displays a warning.
+Game steering telemetry must not reject calibration for being off-center, because the old gyro offset may itself be causing that off-center value. If the host is disconnected or telemetry is unavailable, local gyro calibration still succeeds and the phone displays a warning.
