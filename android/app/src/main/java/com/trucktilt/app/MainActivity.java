@@ -17,6 +17,7 @@ import android.graphics.*;
 import android.hardware.*;
 import android.net.wifi.WifiManager;
 import android.view.*;
+import android.widget.Toast;
 import java.net.*;
 import java.util.*;
 import java.util.concurrent.*;
@@ -91,6 +92,8 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
     };
     volatile boolean hapticsEnabled;
+    volatile boolean calibrationRequestPending = false;
+    volatile long calibrationRequestStartedMs = 0L;
     volatile int telemetryGear = Integer.MIN_VALUE;
     volatile float telemetryRpm = 0f, telemetryRpmMax = 0f, telemetrySpeedKmh = 0f;
     volatile int telemetryGearCount = 0;
@@ -463,6 +466,26 @@ public class MainActivity extends Activity implements SensorEventListener {
         } catch (Exception ignored) { }
     }
 
+    void handleCalibrationResponse(String message) {
+        String[] p = message.trim().split("\\|");
+        if (p.length < 3) return;
+        final boolean accepted = "ACCEPTED".equalsIgnoreCase(p[1]);
+        final String reason = p[2];
+        runOnUiThread(() -> {
+            if (!calibrationRequestPending) return;
+            calibrationRequestPending = false;
+            if (accepted) {
+                applyCalibration();
+                Toast.makeText(this, "Steering calibrated to game center", Toast.LENGTH_SHORT).show();
+            } else {
+                String notice = "Calibration not applied";
+                if ("GAME_NOT_CENTERED".equalsIgnoreCase(reason)) notice = "Center the in-game steering, then calibrate";
+                else if ("NO_ACTIVE_TELEMETRY".equalsIgnoreCase(reason)) notice = "ETS2/ATS telemetry is not active";
+                Toast.makeText(this, notice, Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
     void handleHapticMessage(String message) {
         if (!hapticsEnabled || vibrator == null || !vibrator.hasVibrator()) return;
         final String type = message.trim().toUpperCase(Locale.US);
@@ -560,6 +583,35 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     void calibrate() {
+        if (view == null || view.mode != 0) {
+            applyCalibration();
+            return;
+        }
+        // Use the game as the zero anchor when telemetry is available. Never
+        // silently force a moving truck's steering to zero.
+        if (net == null || !net.connected) {
+            applyCalibration();
+            Toast.makeText(this, "Host unavailable — local calibration only", Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (calibrationRequestPending) return;
+        calibrationRequestPending = true;
+        calibrationRequestStartedMs = System.currentTimeMillis();
+        if (!net.requestCalibration()) {
+            calibrationRequestPending = false;
+            Toast.makeText(this, "Could not request game calibration", Toast.LENGTH_LONG).show();
+            return;
+        }
+        Toast.makeText(this, "Checking game steering center…", Toast.LENGTH_SHORT).show();
+        networkExecutor.schedule(() -> runOnUiThread(() -> {
+            if (calibrationRequestPending && System.currentTimeMillis() - calibrationRequestStartedMs >= 1800L) {
+                calibrationRequestPending = false;
+                Toast.makeText(this, "No telemetry reply — calibration not changed", Toast.LENGTH_LONG).show();
+            }
+        }), 1900, TimeUnit.MILLISECONDS);
+    }
+
+    void applyCalibration() {
         // Rebase steering to zero without an instantaneous jump in the displayed
         // wheel. The offset fades out smoothly while new gyro motion is integrated.
         calibrationFadeOffsetDeg = gyroAngle;
@@ -1450,6 +1502,8 @@ public class MainActivity extends Activity implements SensorEventListener {
                     } else if(s.startsWith("WELCOME|")) connected=true;
                     else if(s.startsWith("HUD|")){
                         handleTelemetryHud(s);
+                    } else if(s.startsWith("CALIBRATION|")){
+                        handleCalibrationResponse(s);
                     } else if(s.startsWith("HAPTIC|")){
                         String payload = s.substring(7).trim();
                         if(!payload.isEmpty()) handleHapticMessage(payload);
@@ -1493,6 +1547,17 @@ public class MainActivity extends Activity implements SensorEventListener {
             }catch(Exception ex){ lastSendError=ex.getClass().getSimpleName(); }
             long now=System.currentTimeMillis();
             if(now-rateWindowStart>=1000){rate=(int)rateWindowPackets;rateWindowPackets=0;rateWindowStart=now;}
+        }
+
+        boolean requestCalibration() {
+            if (!connected || host == null) return false;
+            try {
+                sendRaw("CALIBRATE|" + System.currentTimeMillis(), host, hostPort);
+                return true;
+            } catch (Exception ex) {
+                lastSendError = ex.getClass().getSimpleName();
+                return false;
+            }
         }
 
         void sendPing(){ if(!connected||host==null)return; try{sendRaw("PING|"+System.currentTimeMillis(),host,hostPort);}catch(Exception ex){lastSendError=ex.getClass().getSimpleName();} }
