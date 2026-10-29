@@ -308,7 +308,9 @@ public class MainActivity extends Activity implements SensorEventListener {
         if (twistNorm < 1.0e-6f) return;
         rw /= twistNorm;
         rz /= twistNorm;
-        float twistDeg = normalizeDelta((float)Math.toDegrees(2.0 * Math.atan2(rz, rw)));
+        // Match the established TruckTilt steering convention: positive physical
+        // twist must produce the same direction as the previous gyro Z-axis path.
+        float twistDeg = -normalizeDelta((float)Math.toDegrees(2.0 * Math.atan2(rz, rw)));
 
         if (Float.isNaN(previousRotationTwistDeg)) {
             previousRotationTwistDeg = twistDeg;
