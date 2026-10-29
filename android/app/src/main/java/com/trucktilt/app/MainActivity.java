@@ -249,95 +249,10 @@ public class MainActivity extends Activity implements SensorEventListener {
 
                 rawGyroIntegratedDeg += filteredGyroRateDegPerSec * dt;
 
-                // Anchor recovery refinement:
-                // Only correct while the phone is moving back toward the calibrated
-                // pose, or when it is extremely close to that pose. This avoids pulling
-                // a deliberate 1-4 degree curve toward zero just because it is small.
-                // Once the phone returns to neutral, a slightly stronger smooth settle
-                // removes residual accumulated gyro offset without requiring a long hold.
-                if (calibrationGravity != null && filteredGravity != null
-                        && gravityMagnitudePlausible) {
-                    float turnSpeedDegPerSec = Math.abs(correctedRate);
-                    float dot =
-                            calibrationGravity[0] * filteredGravity[0] +
-                            calibrationGravity[1] * filteredGravity[1] +
-                            calibrationGravity[2] * filteredGravity[2];
-
-                    float normCalib = (float)Math.sqrt(
-                            calibrationGravity[0] * calibrationGravity[0] +
-                            calibrationGravity[1] * calibrationGravity[1] +
-                            calibrationGravity[2] * calibrationGravity[2]);
-                    float normCurr = (float)Math.sqrt(
-                            filteredGravity[0] * filteredGravity[0] +
-                            filteredGravity[1] * filteredGravity[1] +
-                            filteredGravity[2] * filteredGravity[2]);
-
-                    if (normCalib > 0f && normCurr > 0f) {
-                        float cosTheta = clamp(dot / (normCalib * normCurr), -1f, 1f);
-                        float referenceDeviationDeg =
-                                (float)Math.toDegrees(Math.acos(cosTheta));
-
-                        // A falling gravity deviation indicates return toward neutral.
-                        // The very small neutral zone also permits stationary residual
-                        // drift to settle once the phone is physically back at its anchor.
-                        boolean approachingReference =
-                                !Float.isNaN(previousReferenceDeviationDeg)
-                                && referenceDeviationDeg < previousReferenceDeviationDeg - 0.008f;
-                        previousReferenceDeviationDeg = referenceDeviationDeg;
-
-                        float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
-                        // Gravity repeats after a full turn; don't erase intentional
-                        // multi-turn steering based on a repeated gravity orientation.
-                        boolean sameTurnBranch = Math.abs(currentError) < 180f;
-                        final float REFERENCE_RECOVERY_WINDOW_DEG = 12.5f;
-                        final float TIGHT_NEUTRAL_ZONE_DEG = 0.60f;
-                        boolean physicallyNearNeutral =
-                                referenceDeviationDeg <= TIGHT_NEUTRAL_ZONE_DEG;
-                        // Arm only after a meaningful turn, so a deliberate 1-5 degree
-                        // steering angle near calibrated zero is not pulled back.
-                        if (referenceDeviationDeg >= 5.0f) {
-                            referenceRecoveryArmed = true;
-                        }
-                        boolean returningFromMeaningfulTurn = referenceRecoveryArmed
-                                && approachingReference
-                                && referenceDeviationDeg >= TIGHT_NEUTRAL_ZONE_DEG;
-                        boolean recoveryAllowed = referenceRecoveryArmed
-                                && sameTurnBranch
-                                && (returningFromMeaningfulTurn || physicallyNearNeutral)
-                                && referenceDeviationDeg < REFERENCE_RECOVERY_WINDOW_DEG;
-
-                        if (recoveryAllowed) {
-                            float anchorCloseness = clamp(
-                                    1f - referenceDeviationDeg / REFERENCE_RECOVERY_WINDOW_DEG,
-                                    0f, 1f);
-                            float proximityWeight = anchorCloseness * (0.65f + 0.35f * anchorCloseness);
-
-                            // Smoothly damp correction during movement. At the true
-                            // neutral pose use the stronger settling rate to clear the
-                            // last residual offset promptly; never force a broad small-angle reset.
-                            float speedDamping = clamp(1f - turnSpeedDegPerSec / 35f,
-                                    0.65f, 1f);
-                            float settlingRate = physicallyNearNeutral ? 0.32f : 0.23f;
-                            // Bound each correction step below 1.0 so a long sensor-frame
-                            // gap can never push the zero offset past the current error.
-                            // This prevents a left-side residual from being over-corrected
-                            // into a right-side steering command when the phone returns home.
-                            float correctionGain = clamp(
-                                    proximityWeight * speedDamping * settlingRate * (dt * 60f),
-                                    0f, 0.70f);
-                            zeroCorrectionOffset += currentError * correctionGain;
-                            // Disarm once residual error has settled at the calibrated pose.
-                            if (physicallyNearNeutral && Math.abs(currentError) < 0.10f) {
-                                referenceRecoveryArmed = false;
-                            }
-                        }
-                    } else {
-                        previousReferenceDeviationDeg = Float.NaN;
-        referenceRecoveryArmed = false;
-                    }
-                } else {
-                    previousReferenceDeviationDeg = Float.NaN;
-                }
+                // No automatic angle/gravity-based recentering. Calibration defines
+                // zero; after that, steering follows integrated gyro movement. SCS
+                // telemetry is game-state feedback and must not pull phone input toward
+                // zero or alter the calibrated steering angle.
 
                 // Smoothly fade the calibration offset over 250 ms. This preserves
                 // continuity at the button press while making the new neutral zero.
