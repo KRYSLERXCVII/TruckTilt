@@ -597,13 +597,23 @@ public class MainActivity extends Activity implements SensorEventListener {
         if (calibrationRequestPending) return;
         calibrationRequestPending = true;
         calibrationRequestStartedMs = System.currentTimeMillis();
-        if (!net.requestCalibration()) {
-            calibrationRequestPending = false;
-            String detail = net.lastSendError == null ? "unknown network error" : net.lastSendError;
-            Toast.makeText(this, "Could not send calibration request (" + detail + ")", Toast.LENGTH_LONG).show();
-            return;
-        }
         Toast.makeText(this, "Checking game steering center…", Toast.LENGTH_SHORT).show();
+
+        // UDP sends must run off the Android UI thread (StrictMode otherwise
+        // raises NetworkOnMainThreadException).
+        final UdpClient calibrationNet = net;
+        networkExecutor.execute(() -> {
+            if (!calibrationNet.requestCalibration()) {
+                String detail = calibrationNet.lastSendError == null
+                        ? "unknown network error" : calibrationNet.lastSendError;
+                runOnUiThread(() -> {
+                    if (!calibrationRequestPending) return;
+                    calibrationRequestPending = false;
+                    Toast.makeText(this, "Could not send calibration request (" + detail + ")",
+                            Toast.LENGTH_LONG).show();
+                });
+            }
+        });
         networkExecutor.schedule(() -> runOnUiThread(() -> {
             if (calibrationRequestPending && System.currentTimeMillis() - calibrationRequestStartedMs >= 1800L) {
                 calibrationRequestPending = false;
