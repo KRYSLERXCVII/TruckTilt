@@ -2,7 +2,9 @@ name: TruckTilt Android APK
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
+      - feature/windows-steering-telemetry
     paths:
       - 'android/**'
       - 'shared/**'
@@ -35,5 +37,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: TruckTilt-Android-v0.7-debug
+          name: TruckTilt-Android-v0.16.7-debug
           path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
