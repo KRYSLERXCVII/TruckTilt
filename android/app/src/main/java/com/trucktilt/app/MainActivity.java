@@ -476,12 +476,11 @@ public class MainActivity extends Activity implements SensorEventListener {
             if (!calibrationRequestPending) return;
             calibrationRequestPending = false;
             if (accepted) {
-                applyCalibration();
-                Toast.makeText(this, "Steering calibrated to game center", Toast.LENGTH_SHORT).show();
+                Toast.makeText(this, "Gyro calibrated — game telemetry active", Toast.LENGTH_SHORT).show();
             } else {
-                String notice = "Calibration not applied";
-                if ("GAME_NOT_CENTERED".equalsIgnoreCase(reason)) notice = "Center the in-game steering, then calibrate";
-                else if ("NO_ACTIVE_TELEMETRY".equalsIgnoreCase(reason)) notice = "ETS2/ATS telemetry is not active";
+                String notice = "Gyro calibrated locally";
+                if ("NO_ACTIVE_TELEMETRY".equalsIgnoreCase(reason))
+                    notice = "Gyro calibrated locally — ETS2/ATS telemetry is not active";
                 Toast.makeText(this, notice, Toast.LENGTH_LONG).show();
             }
         });
@@ -588,37 +587,34 @@ public class MainActivity extends Activity implements SensorEventListener {
             applyCalibration();
             return;
         }
-        // Use the game as the zero anchor when telemetry is available. Never
-        // silently force a moving truck's steering to zero.
+
+        // Calibration must break the gyro/game feedback loop: immediately make
+        // the current phone orientation the new zero and send neutral steering.
+        // Game telemetry is informational; it must not block local calibration.
+        applyGyroCalibrationImmediate();
+
         if (net == null || !net.connected) {
-            applyCalibration();
-            Toast.makeText(this, "Host unavailable — local calibration only", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Gyro calibrated locally — host unavailable", Toast.LENGTH_LONG).show();
             return;
         }
         if (calibrationRequestPending) return;
         calibrationRequestPending = true;
         calibrationRequestStartedMs = System.currentTimeMillis();
-        Toast.makeText(this, "Checking game steering center…", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "Gyro calibrated — checking game telemetry…", Toast.LENGTH_SHORT).show();
 
-        // UDP sends must run off the Android UI thread (StrictMode otherwise
-        // raises NetworkOnMainThreadException).
         final UdpClient calibrationNet = net;
         networkExecutor.execute(() -> {
-            // StrictMode policy can be inherited when this pool's worker thread
-            // is first created from the UI thread. Permit networking on this
-            // worker only; the UDP send remains off the UI thread.
             StrictMode.setThreadPolicy(
                     new StrictMode.ThreadPolicy.Builder(StrictMode.getThreadPolicy())
                             .permitNetwork()
                             .build());
-
             if (!calibrationNet.requestCalibration()) {
                 String detail = calibrationNet.lastSendError == null
                         ? "unknown network error" : calibrationNet.lastSendError;
                 runOnUiThread(() -> {
                     if (!calibrationRequestPending) return;
                     calibrationRequestPending = false;
-                    Toast.makeText(this, "Could not send calibration request (" + detail + ")",
+                    Toast.makeText(this, "Gyro calibrated locally; host check failed (" + detail + ")",
                             Toast.LENGTH_LONG).show();
                 });
             }
@@ -626,9 +622,34 @@ public class MainActivity extends Activity implements SensorEventListener {
         networkExecutor.schedule(() -> runOnUiThread(() -> {
             if (calibrationRequestPending && System.currentTimeMillis() - calibrationRequestStartedMs >= 1800L) {
                 calibrationRequestPending = false;
-                Toast.makeText(this, "No telemetry reply — calibration not changed", Toast.LENGTH_LONG).show();
+                Toast.makeText(this, "Gyro calibrated locally; no telemetry reply", Toast.LENGTH_LONG).show();
             }
         }), 1900, TimeUnit.MILLISECONDS);
+    }
+
+    void applyGyroCalibrationImmediate() {
+        calibrationFadeOffsetDeg = 0f;
+        calibrationFadeStartNs = 0L;
+        rawGyroIntegratedDeg = 0f;
+        zeroCorrectionOffset = 0f;
+        previousReferenceDeviationDeg = Float.NaN;
+        filteredGyroRateDegPerSec = 0f;
+        gyroRateFilterInitialized = false;
+        lastGyroNs = 0L;
+        stationarySinceNs = 0L;
+        gyroAngle = 0f;
+
+        if (filteredGravity != null) {
+            calibrationGravity = filteredGravity.clone();
+        } else if (currentGravity != null) {
+            calibrationGravity = currentGravity.clone();
+        }
+
+        if (view != null) {
+            view.wheelAngleDeg = 0f;
+            view.steer = 0f;
+            view.invalidate();
+        }
     }
 
     void applyCalibration() {
