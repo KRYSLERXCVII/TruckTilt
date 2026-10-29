@@ -36,7 +36,6 @@ internal sealed class TelemetryHaptics : IDisposable
     private float _lastUserSteer;
     private float _lastGameSteer;
     private DateTime _lastSteeringSampleUtc = DateTime.MinValue;
-    private const float CalibrationNeutralTolerance = 0.025f;
     private readonly CancellationTokenSource _cts = new();
     private Task? _loop;
 
@@ -68,14 +67,10 @@ internal sealed class TelemetryHaptics : IDisposable
                 (DateTime.UtcNow - _lastSteeringSampleUtc).TotalMilliseconds > 500)
                 return "CALIBRATION|REJECTED|NO_ACTIVE_TELEMETRY";
 
-            // Calibration is allowed only when game telemetry is already neutral.
-            // Do not force the steering axis to zero while the truck is turning.
-            if (Math.Abs(_lastGameSteer) > CalibrationNeutralTolerance)
-                return "CALIBRATION|REJECTED|GAME_NOT_CENTERED|" +
-                       _lastUserSteer.ToString("0.000", CultureInfo.InvariantCulture) + "|" +
-                       _lastGameSteer.ToString("0.000", CultureInfo.InvariantCulture);
-
-            return "CALIBRATION|ACCEPTED|GAME_CENTERED|" +
+            // Phone calibration has already zeroed gyro steering locally. Do not
+            // reject it based on the game's previous steering sample: that creates
+            // a feedback loop where the user cannot calibrate to clear the offset.
+            return "CALIBRATION|ACCEPTED|TELEMETRY_ACTIVE|" +
                    _lastUserSteer.ToString("0.000", CultureInfo.InvariantCulture) + "|" +
                    _lastGameSteer.ToString("0.000", CultureInfo.InvariantCulture);
         }
