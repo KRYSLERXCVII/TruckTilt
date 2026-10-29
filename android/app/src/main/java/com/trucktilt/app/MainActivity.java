@@ -288,11 +288,13 @@ public class MainActivity extends Activity implements SensorEventListener {
                         // multi-turn steering based on a repeated gravity orientation.
                         boolean sameTurnBranch = Math.abs(currentError) < 180f;
                         final float REFERENCE_RECOVERY_WINDOW_DEG = 12.5f;
-                        final float TIGHT_NEUTRAL_ZONE_DEG = 1.75f;
+                        final float TIGHT_NEUTRAL_ZONE_DEG = 0.60f;
                         boolean physicallyNearNeutral =
                                 referenceDeviationDeg <= TIGHT_NEUTRAL_ZONE_DEG;
+                        boolean returningFromMeaningfulTurn = approachingReference
+                                && referenceDeviationDeg >= 3.0f;
                         boolean recoveryAllowed = sameTurnBranch
-                                && (approachingReference || physicallyNearNeutral)
+                                && (returningFromMeaningfulTurn || physicallyNearNeutral)
                                 && referenceDeviationDeg < REFERENCE_RECOVERY_WINDOW_DEG;
 
                         if (recoveryAllowed) {
