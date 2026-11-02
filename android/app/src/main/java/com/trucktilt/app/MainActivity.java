@@ -19,6 +19,11 @@ import android.hardware.*;
 import android.net.wifi.WifiManager;
 import android.view.*;
 import android.widget.Toast;
+import com.google.android.gms.location.DeviceOrientation;
+import com.google.android.gms.location.DeviceOrientationListener;
+import com.google.android.gms.location.DeviceOrientationRequest;
+import com.google.android.gms.location.FusedOrientationProviderClient;
+import com.google.android.gms.location.LocationServices;
 import java.net.*;
 import java.util.*;
 import java.util.concurrent.*;
@@ -35,6 +40,12 @@ public class MainActivity extends Activity implements SensorEventListener {
     ControllerView view;
     SensorManager sensors;
     Sensor gyro, accel, rotationVector;
+    private FusedOrientationProviderClient fusedOrientationClient;
+    private DeviceOrientationListener fusedOrientationListener;
+    private final ExecutorService orientationExecutor = Executors.newSingleThreadExecutor();
+    private volatile boolean fusedOrientationActive = false;
+    private volatile float orientationHeadingErrorDeg = 180f;
+    private volatile float orientationConservativeErrorDeg = 180f;
     // Rotation-vector steering prototype: measure orientation relative to the
     // manually calibrated quaternion instead of relying only on integrated gyro rate.
     float[] currentRotationQuaternion = null; // Android quaternion order: w, x, y, z
@@ -140,9 +151,27 @@ public class MainActivity extends Activity implements SensorEventListener {
         // Prefer the full rotation vector for steering. Unlike GAME_ROTATION_VECTOR,
         // it uses the geomagnetic reference to correct long-term heading drift.
         // GAME_ROTATION_VECTOR is only a fallback on devices without the full sensor.
+        // Hardware rotation vector is retained only as a fallback if Google FOP
+        // is unavailable. FOP is the primary orientation source for steering.
         rotationVector = sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
-        if (rotationVector == null)
-            rotationVector = sensors.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
+        fusedOrientationClient = LocationServices.getFusedOrientationProviderClient(this);
+        fusedOrientationListener = new DeviceOrientationListener() {
+            @Override public void onDeviceOrientationChanged(DeviceOrientation orientation) {
+                float[] attitude = orientation.getAttitude(); // [x, y, z, w]
+                if (attitude == null || attitude.length != 4) return;
+                float[] q = new float[4];
+                // Android's helper converts [x,y,z,w] to [w,x,y,z].
+                SensorManager.getQuaternionFromVector(q, attitude);
+                currentRotationQuaternion = q;
+                orientationHeadingErrorDeg = orientation.getHeadingErrorDegrees();
+                orientationConservativeErrorDeg =
+                        orientation.hasConservativeHeadingErrorDegrees()
+                                ? orientation.getConservativeHeadingErrorDegrees()
+                                : 180f;
+                updateRotationVectorSteering(orientation.getElapsedRealtimeNs());
+                if (view != null) view.postInvalidate();
+            }
+        };
 
         view = new ControllerView(this);
         net = new UdpClient();
@@ -170,12 +199,42 @@ public class MainActivity extends Activity implements SensorEventListener {
         super.onResume();
         if (gyro != null) sensors.registerListener(this, gyro, SensorManager.SENSOR_DELAY_GAME);
         if (accel != null) sensors.registerListener(this, accel, SensorManager.SENSOR_DELAY_GAME);
-        if (rotationVector != null)
+        startFusedOrientation();
+
+    }
+
+    private void startFusedOrientation() {
+        if (fusedOrientationClient == null || fusedOrientationListener == null) {
+            registerFallbackRotationVector();
+            return;
+        }
+        DeviceOrientationRequest request = new DeviceOrientationRequest.Builder(
+                DeviceOrientationRequest.OUTPUT_PERIOD_MEDIUM).build();
+        fusedOrientationClient.requestOrientationUpdates(
+                request, orientationExecutor, fusedOrientationListener)
+                .addOnSuccessListener(unused -> fusedOrientationActive = true)
+                .addOnFailureListener(error -> {
+                    fusedOrientationActive = false;
+                    runOnUiThread(this::registerFallbackRotationVector);
+                });
+    }
+
+    private void stopFusedOrientation() {
+        fusedOrientationActive = false;
+        if (fusedOrientationClient != null && fusedOrientationListener != null) {
+            fusedOrientationClient.removeOrientationUpdates(fusedOrientationListener);
+        }
+    }
+
+    private void registerFallbackRotationVector() {
+        if (!fusedOrientationActive && rotationVector != null) {
             sensors.registerListener(this, rotationVector, SensorManager.SENSOR_DELAY_GAME);
+        }
     }
 
     @Override protected void onPause() {
         sensors.unregisterListener(this);
+        stopFusedOrientation();
         super.onPause();
     }
 
@@ -184,6 +243,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         if (inputFuture != null) inputFuture.cancel(true);
         if (pingFuture != null) pingFuture.cancel(true);
         networkExecutor.shutdownNow();
+        orientationExecutor.shutdownNow();
         if (net != null) net.stop();
         stopOffRoadRumble();
         super.onDestroy();
@@ -274,8 +334,7 @@ public class MainActivity extends Activity implements SensorEventListener {
 
                 if (rotationVector == null) updateSteeringOutput(e.timestamp);
             }
-        } else if (e.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR
-                || e.sensor.getType() == Sensor.TYPE_GAME_ROTATION_VECTOR) {
+        } else if (e.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR) {
             float[] q = new float[4];
             SensorManager.getQuaternionFromVector(q, e.values);
             currentRotationQuaternion = q;
@@ -285,10 +344,10 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     /**
-     * Extract only twist around the calibrated phone's local Z axis (normal to
-     * the screen). Swing-twist decomposition projects the relative quaternion's
-     * vector part onto that axis, rejecting pitch/roll swing instead of treating
-     * the full 3D orientation change as steering.
+     * Extract the calibrated phone-local Z twist from an absolute fused attitude.
+     * FOP supplies a world-referenced quaternion, so this is an absolute relative
+     * pose calculation rather than an indefinitely integrated gyro-rate angle.
+     * Pure pitch/roll swing is discarded by the swing-twist projection.
      */
     private void updateRotationVectorSteering(long timestampNs) {
         if (currentRotationQuaternion == null) return;
@@ -303,7 +362,8 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         float[] c = calibratedRotationQuaternion;
         float[] q = currentRotationQuaternion;
-        // Relative orientation in the calibrated phone frame: conjugate(c) * q.
+        // FOP's attitude is supplied as [w,x,y,z] after Android conversion.
+        // Relative quaternion: conjugate(calibrated) * current.
         float rw = c[0] * q[0] + c[1] * q[1] + c[2] * q[2] + c[3] * q[3];
         float rz = c[0] * q[3] - c[1] * q[2] + c[2] * q[1] - c[3] * q[0];
 
