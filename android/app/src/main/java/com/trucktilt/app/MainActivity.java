@@ -376,15 +376,11 @@ public class MainActivity extends Activity implements SensorEventListener {
         float twistDeg = -normalizeDelta(
                 (float)Math.toDegrees(2.0 * Math.atan2(rz, rw)));
 
-        if (Float.isNaN(previousRotationTwistDeg)) {
-            previousRotationTwistDeg = twistDeg;
-        } else {
-            float delta = normalizeDelta(twistDeg - previousRotationTwistDeg);
-            // Reject impossible single-sample jumps; retain ordinary small movements.
-            if (Math.abs(delta) < 90f) rotationVectorIntegratedDeg += delta;
-            previousRotationTwistDeg = twistDeg;
-        }
-
+        // This is an absolute angle relative to the saved calibration quaternion.
+        // Do NOT integrate per-sample deltas: that would reintroduce accumulated drift.
+        // A fresh fused attitude directly replaces the previous steering angle.
+        rotationVectorIntegratedDeg = twistDeg;
+        previousRotationTwistDeg = twistDeg;
         rotationVectorSteeringActive = true;
         updateSteeringOutput(timestampNs);
     }
