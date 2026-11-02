@@ -137,12 +137,12 @@ public class MainActivity extends Activity implements SensorEventListener {
         sensors = (SensorManager)getSystemService(SENSOR_SERVICE);
         gyro = sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
         accel = sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
-        // Prefer the game rotation vector: it avoids magnetometer-driven heading
-        // corrections that can couple nearby magnetic interference into steering.
-        // Fall back to the full rotation vector on devices without this sensor.
-        rotationVector = sensors.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
+        // Prefer the full rotation vector for steering. Unlike GAME_ROTATION_VECTOR,
+        // it uses the geomagnetic reference to correct long-term heading drift.
+        // GAME_ROTATION_VECTOR is only a fallback on devices without the full sensor.
+        rotationVector = sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
         if (rotationVector == null)
-            rotationVector = sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+            rotationVector = sensors.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
 
         view = new ControllerView(this);
         net = new UdpClient();
