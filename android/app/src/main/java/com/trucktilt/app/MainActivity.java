@@ -324,9 +324,9 @@ public class MainActivity extends Activity implements SensorEventListener {
                             (correctedRate - filteredGyroRateDegPerSec) * filterAlpha;
                 }
 
-                // Learn residual gyro bias only after the corrected rate has been
-                // very close to zero for a short period. No angle/gravity-based
-                // correction is applied, so steering cannot be pulled toward zero.
+                // Learn residual gyro bias only during near-stationary periods.
+                // The separate gravity observer handles position drift; this bias
+                // learner never resets steering toward zero.
                 float accelNorm = 0f;
                 if (currentGravity != null) {
                     accelNorm = (float)Math.sqrt(
@@ -841,6 +841,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         } else if (currentGravity != null) {
             calibrationGravity = currentGravity.clone();
         }
+        captureGravityReferenceForManualZero();
 
         if (view != null) {
             view.wheelAngleDeg = 0f;
