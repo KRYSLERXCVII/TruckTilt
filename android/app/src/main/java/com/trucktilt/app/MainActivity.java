@@ -39,7 +39,14 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     ControllerView view;
     SensorManager sensors;
-    Sensor gyro, accel, rotationVector;
+    Sensor gyro, accel, rotationVector, gravitySensor, linearAccelerationSensor;
+    private final SteeringDriftObserver steeringDriftObserver = new SteeringDriftObserver();
+    private float[] currentGravityReference = null;
+    private float[] currentLinearAcceleration = null;
+    private long currentGravityReferenceTimestampNs = 0L;
+    private long currentLinearAccelerationTimestampNs = 0L;
+    private boolean manualGravityCalibrationPending = false;
+    private boolean gravityRebasePending = false;
     private FusedOrientationProviderClient fusedOrientationClient;
     private DeviceOrientationListener fusedOrientationListener;
     private final ExecutorService orientationExecutor = Executors.newSingleThreadExecutor();
@@ -148,6 +155,8 @@ public class MainActivity extends Activity implements SensorEventListener {
         sensors = (SensorManager)getSystemService(SENSOR_SERVICE);
         gyro = sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
         accel = sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+        gravitySensor = sensors.getDefaultSensor(Sensor.TYPE_GRAVITY);
+        linearAccelerationSensor = sensors.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION);
         // Prefer the full rotation vector for steering. Unlike GAME_ROTATION_VECTOR,
         // it uses the geomagnetic reference to correct long-term heading drift.
         // GAME_ROTATION_VECTOR is only a fallback on devices without the full sensor.
@@ -199,6 +208,8 @@ public class MainActivity extends Activity implements SensorEventListener {
         super.onResume();
         if (gyro != null) sensors.registerListener(this, gyro, SensorManager.SENSOR_DELAY_GAME);
         if (accel != null) sensors.registerListener(this, accel, SensorManager.SENSOR_DELAY_GAME);
+        if (gravitySensor != null) sensors.registerListener(this, gravitySensor, SensorManager.SENSOR_DELAY_GAME);
+        if (linearAccelerationSensor != null) sensors.registerListener(this, linearAccelerationSensor, SensorManager.SENSOR_DELAY_GAME);
         startFusedOrientation();
 
     }
@@ -233,6 +244,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     @Override protected void onPause() {
+        gravityRebasePending = steeringDriftObserver.hasReference();
         sensors.unregisterListener(this);
         stopFusedOrientation();
         super.onPause();
@@ -263,12 +275,26 @@ public class MainActivity extends Activity implements SensorEventListener {
                 filteredGravity[2] += (e.values[2] - filteredGravity[2]) * gravityAlpha;
             }
             
+            if (gravitySensor == null) {
+                currentGravityReference = filteredGravity.clone();
+                currentGravityReferenceTimestampNs = e.timestamp;
+                capturePendingGravityReference();
+            }
             float norm = (float)Math.sqrt(e.values[0]*e.values[0] + e.values[1]*e.values[1] + e.values[2]*e.values[2]);
             if (norm > 0) {
                 float pitch = (float)Math.toDegrees(Math.asin(clamp(e.values[1]/norm, -1f, 1f)));
                 tiltAngle = clamp(pitch, -45f, 45f);
             }
-        } 
+        }
+        else if (e.sensor.getType() == Sensor.TYPE_GRAVITY) {
+            currentGravityReference = e.values.clone();
+            currentGravityReferenceTimestampNs = e.timestamp;
+            capturePendingGravityReference();
+        }
+        else if (e.sensor.getType() == Sensor.TYPE_LINEAR_ACCELERATION) {
+            currentLinearAcceleration = e.values.clone();
+            currentLinearAccelerationTimestampNs = e.timestamp;
+        }
         else if (e.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
             if (lastGyroNs == 0L) {
                 lastGyroNs = e.timestamp;
@@ -327,11 +353,12 @@ public class MainActivity extends Activity implements SensorEventListener {
                 // yaw as the steering angle caused the observed 30-degree offset.
                 // Integrate the calibrated local Z rate for smooth multi-turn travel.
                 rawGyroIntegratedDeg += filteredGyroRateDegPerSec * dt;
+                applyGravityDriftCorrection();
 
-                // No automatic angle/gravity-based recentering. Calibration defines
-                // zero; after that, steering follows integrated gyro movement. SCS
-                // telemetry is game-state feedback and must not pull phone input toward
-                // zero or alter the calibrated steering angle.
+                // Gravity is used only as a confidence-gated physical reference.
+                // The gyro remains the continuous multi-revolution source; this
+                // correction never targets zero unless the phone physically returns
+                // to its manually calibrated orientation.
 
                 rotationVectorSteeringActive = false;
                 updateSteeringOutput(e.timestamp);
@@ -399,6 +426,43 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
         rotationVectorSteeringActive = true;
         updateSteeringOutput(timestampNs);
+    }
+
+    private void capturePendingGravityReference() {
+        if (currentGravityReference == null || currentGravityReferenceTimestampNs <= 0L) return;
+        if (manualGravityCalibrationPending) {
+            if (steeringDriftObserver.calibrate(currentGravityReference, 0f,
+                    currentGravityReferenceTimestampNs)) {
+                manualGravityCalibrationPending = false;
+                gravityRebasePending = false;
+            }
+        } else if (gravityRebasePending && steeringDriftObserver.hasReference()) {
+            if (steeringDriftObserver.calibrate(currentGravityReference, rawGyroIntegratedDeg,
+                    currentGravityReferenceTimestampNs)) {
+                gravityRebasePending = false;
+            }
+        }
+    }
+
+    private void applyGravityDriftCorrection() {
+        if (currentGravityReference == null || currentGravityReferenceTimestampNs <= 0L) return;
+        float[] linear = currentLinearAcceleration;
+        if (linear == null || currentLinearAccelerationTimestampNs <= 0L
+                || Math.abs(currentGravityReferenceTimestampNs - currentLinearAccelerationTimestampNs)
+                    > 150_000_000L) {
+            if (currentGravity != null) {
+                linear = new float[]{
+                        currentGravity[0] - currentGravityReference[0],
+                        currentGravity[1] - currentGravityReference[1],
+                        currentGravity[2] - currentGravityReference[2]
+                };
+            } else {
+                linear = null;
+            }
+        }
+        rawGyroIntegratedDeg = steeringDriftObserver.correct(
+                rawGyroIntegratedDeg, currentGravityReference, linear,
+                currentGravityReferenceTimestampNs);
     }
 
     private void updateSteeringOutput(long timestampNs) {
@@ -710,6 +774,18 @@ public class MainActivity extends Activity implements SensorEventListener {
         }), 1900, TimeUnit.MILLISECONDS);
     }
 
+    private void captureGravityReferenceForManualZero() {
+        gravityRebasePending = false;
+        if (currentGravityReference != null && currentGravityReferenceTimestampNs > 0L
+                && steeringDriftObserver.calibrate(currentGravityReference, 0f,
+                    currentGravityReferenceTimestampNs)) {
+            manualGravityCalibrationPending = false;
+        } else {
+            steeringDriftObserver.reset();
+            manualGravityCalibrationPending = true;
+        }
+    }
+
     void applyGyroCalibrationImmediate() {
         calibrationFadeOffsetDeg = 0f;
         calibrationFadeStartNs = 0L;
@@ -733,6 +809,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         } else if (currentGravity != null) {
             calibrationGravity = currentGravity.clone();
         }
+        captureGravityReferenceForManualZero();
 
         if (view != null) {
             view.wheelAngleDeg = 0f;
