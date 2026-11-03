@@ -45,6 +45,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     private float[] currentLinearAcceleration = null;
     private long currentGravityReferenceTimestampNs = 0L;
     private long currentLinearAccelerationTimestampNs = 0L;
+    private long currentAccelerometerTimestampNs = 0L;
     private boolean manualGravityCalibrationPending = false;
     private boolean gravityRebasePending = false;
     private FusedOrientationProviderClient fusedOrientationClient;
@@ -264,6 +265,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     @Override public void onSensorChanged(SensorEvent e) {
         if (e.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
             currentGravity = e.values.clone();
+            currentAccelerometerTimestampNs = e.timestamp;
             if (filteredGravity == null) {
                 filteredGravity = e.values.clone();
             } else {
@@ -450,7 +452,9 @@ public class MainActivity extends Activity implements SensorEventListener {
         if (linear == null || currentLinearAccelerationTimestampNs <= 0L
                 || Math.abs(currentGravityReferenceTimestampNs - currentLinearAccelerationTimestampNs)
                     > 150_000_000L) {
-            if (currentGravity != null) {
+            if (currentGravity != null && currentAccelerometerTimestampNs > 0L
+                    && Math.abs(currentGravityReferenceTimestampNs - currentAccelerometerTimestampNs)
+                        <= 150_000_000L) {
                 linear = new float[]{
                         currentGravity[0] - currentGravityReference[0],
                         currentGravity[1] - currentGravityReference[1],
