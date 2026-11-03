@@ -322,17 +322,19 @@ public class MainActivity extends Activity implements SensorEventListener {
                     stationarySinceNs = 0L;
                 }
 
-                // Keep the original gyro integrator as a fallback only on devices
-                // that do not provide a rotation-vector sensor.
-                if (rotationVector == null)
-                    rawGyroIntegratedDeg += filteredGyroRateDegPerSec * dt;
+                // Gyroscope is the continuous steering source. Absolute heading
+                // sensors can jump when the magnetometer is disturbed; using their
+                // yaw as the steering angle caused the observed 30-degree offset.
+                // Integrate the calibrated local Z rate for smooth multi-turn travel.
+                rawGyroIntegratedDeg += filteredGyroRateDegPerSec * dt;
 
                 // No automatic angle/gravity-based recentering. Calibration defines
                 // zero; after that, steering follows integrated gyro movement. SCS
                 // telemetry is game-state feedback and must not pull phone input toward
                 // zero or alter the calibrated steering angle.
 
-                if (rotationVector == null) updateSteeringOutput(e.timestamp);
+                rotationVectorSteeringActive = false;
+                updateSteeringOutput(e.timestamp);
             }
         } else if (e.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR) {
             float[] q = new float[4];
@@ -414,9 +416,10 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
         float outputOffset = calibrationFadeStartNs == 0L
                 ? calibrationFadeOffsetDeg : calibrationFadeOffsetDeg * (1f - fade);
-        float sourceAngle = rotationVectorSteeringActive
-                ? rotationVectorIntegratedDeg
-                : rawGyroIntegratedDeg - zeroCorrectionOffset;
+        // Do not let magnetometer-referenced quaternion yaw overwrite the
+        // continuous steering integrator. Gyro bias learning above keeps the
+        // integrated rate stable while preserving multi-turn steering range.
+        float sourceAngle = rawGyroIntegratedDeg - zeroCorrectionOffset;
         float half = view == null ? 450f : view.rangeDeg / 2f;
         gyroAngle = clamp(sourceAngle + outputOffset, -half, half);
     }
@@ -716,7 +719,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         previousRotationTwistDeg = Float.NaN;
         calibratedRotationQuaternion = currentRotationQuaternion == null
                 ? null : currentRotationQuaternion.clone();
-        rotationVectorSteeringActive = calibratedRotationQuaternion != null;
+        rotationVectorSteeringActive = false;
         previousReferenceDeviationDeg = Float.NaN;
         referenceRecoveryArmed = false;
         filteredGyroRateDegPerSec = 0f;
