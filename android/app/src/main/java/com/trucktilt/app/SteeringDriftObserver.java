@@ -99,7 +99,7 @@ public final class SteeringDriftObserver {
     }
 
     private static boolean isLinearAccelerationUsable(float[] acceleration) {
-        if (acceleration == null || acceleration.length < 3) return true;
+        if (acceleration == null || acceleration.length < 3) return false;
         float norm = (float) Math.sqrt(acceleration[0] * acceleration[0]
                 + acceleration[1] * acceleration[1] + acceleration[2] * acceleration[2]);
         return norm <= MAX_LINEAR_ACCELERATION;
