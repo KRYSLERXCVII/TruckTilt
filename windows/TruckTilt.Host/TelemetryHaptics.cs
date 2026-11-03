@@ -1,4 +1,5 @@
 using System.IO.MemoryMappedFiles;
+using System.Globalization;
 using System.Text;
 
 namespace TruckTilt.Host;
@@ -18,6 +19,8 @@ internal sealed class TelemetryHaptics : IDisposable
     private const int GearOffset = 504;             // truck_i.gear (500 is common_i.restStop)
     private const int EngineRpmMaxOffset = 740;     // config_f.engineRpmMax
     private const int EngineRpmOffset = 952;        // truck_f.engineRpm (truck_f starts at 948)
+    private const int UserSteerOffset = 956;        // truck_f.userSteer
+    private const int GameSteerOffset = 972;        // truck_f.gameSteer
     private const int SpeedOffset = 948;            // truck_f.speed (m/s, Rev. 12; truck_f starts at 948)
     private const int WheelSubstanceOffset = 96;    // truck_ui.truck_wheelSubstance[0]
     private const int PoweredWheelsOffset = 1516;   // config_b.truckWheelPowered[0]
@@ -28,6 +31,11 @@ internal sealed class TelemetryHaptics : IDisposable
     private const int PollMs = 50;
 
     private readonly Action<string> _sendHaptic;
+    private readonly object _steeringSync = new();
+    private bool _hasActiveSteeringSample;
+    private float _lastUserSteer;
+    private float _lastGameSteer;
+    private DateTime _lastSteeringSampleUtc = DateTime.MinValue;
     private readonly CancellationTokenSource _cts = new();
     private Task? _loop;
 
@@ -42,12 +50,30 @@ internal sealed class TelemetryHaptics : IDisposable
     private bool _mapStatusLogged;
     private bool _activeStatusLogged;
     private DateTime _lastWaitingLog = DateTime.MinValue;
+    private DateTime _lastSteeringLog = DateTime.MinValue;
 
     public TelemetryHaptics(Action<string> sendHaptic) => _sendHaptic = sendHaptic;
 
     public void Start()
     {
         _loop ??= Task.Run(LoopAsync);
+    }
+
+    public string GetCalibrationResponse()
+    {
+        lock (_steeringSync)
+        {
+            if (!_hasActiveSteeringSample ||
+                (DateTime.UtcNow - _lastSteeringSampleUtc).TotalMilliseconds > 500)
+                return "CALIBRATION|REJECTED|NO_ACTIVE_TELEMETRY";
+
+            // Phone calibration has already zeroed gyro steering locally. Do not
+            // reject it based on the game's previous steering sample: that creates
+            // a feedback loop where the user cannot calibrate to clear the offset.
+            return "CALIBRATION|ACCEPTED|TELEMETRY_ACTIVE|" +
+                   _lastUserSteer.ToString("0.000", CultureInfo.InvariantCulture) + "|" +
+                   _lastGameSteer.ToString("0.000", CultureInfo.InvariantCulture);
+        }
     }
 
     private async Task LoopAsync()
@@ -129,8 +155,45 @@ internal sealed class TelemetryHaptics : IDisposable
         float rpmMax = ReadFloat(EngineRpmMaxOffset);
         float speedMps = ReadFloat(SpeedOffset);
         float speedKmh = float.IsFinite(speedMps) ? Math.Max(0f, speedMps * 3.6f) : 0f;
-        // HUD packet: gear, RPM, RPM limit, forward gear count, speed in km/h.
-        _sendHaptic($"HUD|{gear}|{Math.Max(0f, rpm):0}|{Math.Max(0f, rpmMax):0}|{gears}|{speedKmh:0.0}");
+
+        // SCS telemetry revision 12 exposes raw user steering and effective
+        // steering used by the simulation. These values are diagnostics only;
+        // they never feed back into or alter controller input.
+        float userSteer = ReadFloat(UserSteerOffset);
+        float gameSteer = ReadFloat(GameSteerOffset);
+        if (!float.IsFinite(userSteer)) userSteer = 0f;
+        if (!float.IsFinite(gameSteer)) gameSteer = 0f;
+        userSteer = Math.Clamp(userSteer, -1f, 1f);
+        gameSteer = Math.Clamp(gameSteer, -1f, 1f);
+        lock (_steeringSync)
+        {
+            _lastUserSteer = userSteer;
+            _lastGameSteer = gameSteer;
+            _lastSteeringSampleUtc = DateTime.UtcNow;
+            _hasActiveSteeringSample = true;
+        }
+
+        // HUD packet: gear, RPM, RPM limit, forward gear count, speed km/h,
+        // raw user steering, and effective in-game steering (both -1..+1).
+        _sendHaptic(string.Join("|", new[] {
+            "HUD",
+            gear.ToString(CultureInfo.InvariantCulture),
+            Math.Max(0f, rpm).ToString("0", CultureInfo.InvariantCulture),
+            Math.Max(0f, rpmMax).ToString("0", CultureInfo.InvariantCulture),
+            gears.ToString(CultureInfo.InvariantCulture),
+            speedKmh.ToString("0.0", CultureInfo.InvariantCulture),
+            userSteer.ToString("0.000", CultureInfo.InvariantCulture),
+            gameSteer.ToString("0.000", CultureInfo.InvariantCulture)
+        }));
+
+        // Emit compact one-second diagnostics in --debug mode so the value
+        // received by the game can be compared with the raw user input.
+        if ((DateTime.UtcNow - _lastSteeringLog).TotalSeconds >= 1)
+        {
+            HostLog.Debug($"TELEMETRY: user steer={userSteer:+0.000;-0.000;0.000}, " +
+                          $"game steer={gameSteer:+0.000;-0.000;0.000}");
+            _lastSteeringLog = DateTime.UtcNow;
+        }
         bool engineEnabled = ReadByte(EngineEnabledOffset) != 0;
 
         // Engine start/stop: initialize silently so connecting to a running
@@ -234,6 +297,13 @@ internal sealed class TelemetryHaptics : IDisposable
 
     private void ResetState(bool sendRumbleStop)
     {
+        lock (_steeringSync)
+        {
+            _hasActiveSteeringSample = false;
+            _lastSteeringSampleUtc = DateTime.MinValue;
+            _lastUserSteer = 0f;
+            _lastGameSteer = 0f;
+        }
         if (sendRumbleStop && _offRoadLatched)
             _sendHaptic("HAPTIC|RUMBLE_STOP");
 

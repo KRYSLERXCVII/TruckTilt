@@ -2,6 +2,7 @@ package com.trucktilt.app;
 
 import android.app.Activity;
 import android.os.Bundle;
+import android.os.StrictMode;
 import android.os.Build;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
@@ -17,6 +18,12 @@ import android.graphics.*;
 import android.hardware.*;
 import android.net.wifi.WifiManager;
 import android.view.*;
+import android.widget.Toast;
+import com.google.android.gms.location.DeviceOrientation;
+import com.google.android.gms.location.DeviceOrientationListener;
+import com.google.android.gms.location.DeviceOrientationRequest;
+import com.google.android.gms.location.FusedOrientationProviderClient;
+import com.google.android.gms.location.LocationServices;
 import java.net.*;
 import java.util.*;
 import java.util.concurrent.*;
@@ -32,7 +39,28 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     ControllerView view;
     SensorManager sensors;
-    Sensor gyro, accel;
+    Sensor gyro, accel, rotationVector, gravitySensor, linearAccelerationSensor;
+    private final SteeringDriftObserver steeringDriftObserver = new SteeringDriftObserver();
+    private float[] currentGravityReference = null;
+    private float[] currentLinearAcceleration = null;
+    private long currentGravityReferenceTimestampNs = 0L;
+    private long currentLinearAccelerationTimestampNs = 0L;
+    private long currentAccelerometerTimestampNs = 0L;
+    private boolean manualGravityCalibrationPending = false;
+    private boolean gravityRebasePending = false;
+    private FusedOrientationProviderClient fusedOrientationClient;
+    private DeviceOrientationListener fusedOrientationListener;
+    private final ExecutorService orientationExecutor = Executors.newSingleThreadExecutor();
+    private volatile boolean fusedOrientationActive = false;
+    private volatile float orientationHeadingErrorDeg = 180f;
+    private volatile float orientationConservativeErrorDeg = 180f;
+    // Rotation-vector steering prototype: measure orientation relative to the
+    // manually calibrated quaternion instead of relying only on integrated gyro rate.
+    float[] currentRotationQuaternion = null; // Android quaternion order: w, x, y, z
+    float[] calibratedRotationQuaternion = null;
+    float previousRotationTwistDeg = Float.NaN;
+    float rotationVectorIntegratedDeg = 0f;
+    boolean rotationVectorSteeringActive = false;
 
     float gyroAngle = 0f, tiltAngle = 0f;
     long lastGyroNs = 0L;
@@ -51,6 +79,8 @@ public class MainActivity extends Activity implements SensorEventListener {
     // Used to distinguish a phone returning toward its calibrated pose from
     // a small intentional angle being held during a gentle curve.
     float previousReferenceDeviationDeg = Float.NaN;
+    // Arm recovery after meaningful turns only; preserve tiny intentional angles.
+    boolean referenceRecoveryArmed = false;
     float gyroBiasDegPerSec = 0f;
     float filteredGyroRateDegPerSec = 0f;
     boolean gyroRateFilterInitialized = false;
@@ -91,6 +121,8 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
     };
     volatile boolean hapticsEnabled;
+    volatile boolean calibrationRequestPending = false;
+    volatile long calibrationRequestStartedMs = 0L;
     volatile int telemetryGear = Integer.MIN_VALUE;
     volatile float telemetryRpm = 0f, telemetryRpmMax = 0f, telemetrySpeedKmh = 0f;
     volatile int telemetryGearCount = 0;
@@ -124,6 +156,32 @@ public class MainActivity extends Activity implements SensorEventListener {
         sensors = (SensorManager)getSystemService(SENSOR_SERVICE);
         gyro = sensors.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
         accel = sensors.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+        gravitySensor = sensors.getDefaultSensor(Sensor.TYPE_GRAVITY);
+        linearAccelerationSensor = sensors.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION);
+        // Prefer the full rotation vector for steering. Unlike GAME_ROTATION_VECTOR,
+        // it uses the geomagnetic reference to correct long-term heading drift.
+        // GAME_ROTATION_VECTOR is only a fallback on devices without the full sensor.
+        // Hardware rotation vector is retained only as a fallback if Google FOP
+        // is unavailable. FOP is the primary orientation source for steering.
+        rotationVector = sensors.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+        fusedOrientationClient = LocationServices.getFusedOrientationProviderClient(this);
+        fusedOrientationListener = new DeviceOrientationListener() {
+            @Override public void onDeviceOrientationChanged(DeviceOrientation orientation) {
+                float[] attitude = orientation.getAttitude(); // [x, y, z, w]
+                if (attitude == null || attitude.length != 4) return;
+                float[] q = new float[4];
+                // Android's helper converts [x,y,z,w] to [w,x,y,z].
+                SensorManager.getQuaternionFromVector(q, attitude);
+                currentRotationQuaternion = q;
+                orientationHeadingErrorDeg = orientation.getHeadingErrorDegrees();
+                orientationConservativeErrorDeg =
+                        orientation.hasConservativeHeadingErrorDegrees()
+                                ? orientation.getConservativeHeadingErrorDegrees()
+                                : 180f;
+                updateRotationVectorSteering(orientation.getElapsedRealtimeNs());
+                if (view != null) view.postInvalidate();
+            }
+        };
 
         view = new ControllerView(this);
         net = new UdpClient();
@@ -151,10 +209,45 @@ public class MainActivity extends Activity implements SensorEventListener {
         super.onResume();
         if (gyro != null) sensors.registerListener(this, gyro, SensorManager.SENSOR_DELAY_GAME);
         if (accel != null) sensors.registerListener(this, accel, SensorManager.SENSOR_DELAY_GAME);
+        if (gravitySensor != null) sensors.registerListener(this, gravitySensor, SensorManager.SENSOR_DELAY_GAME);
+        if (linearAccelerationSensor != null) sensors.registerListener(this, linearAccelerationSensor, SensorManager.SENSOR_DELAY_GAME);
+        startFusedOrientation();
+
+    }
+
+    private void startFusedOrientation() {
+        if (fusedOrientationClient == null || fusedOrientationListener == null) {
+            registerFallbackRotationVector();
+            return;
+        }
+        DeviceOrientationRequest request = new DeviceOrientationRequest.Builder(
+                DeviceOrientationRequest.OUTPUT_PERIOD_MEDIUM).build();
+        fusedOrientationClient.requestOrientationUpdates(
+                request, orientationExecutor, fusedOrientationListener)
+                .addOnSuccessListener(unused -> fusedOrientationActive = true)
+                .addOnFailureListener(error -> {
+                    fusedOrientationActive = false;
+                    runOnUiThread(this::registerFallbackRotationVector);
+                });
+    }
+
+    private void stopFusedOrientation() {
+        fusedOrientationActive = false;
+        if (fusedOrientationClient != null && fusedOrientationListener != null) {
+            fusedOrientationClient.removeOrientationUpdates(fusedOrientationListener);
+        }
+    }
+
+    private void registerFallbackRotationVector() {
+        if (!fusedOrientationActive && rotationVector != null) {
+            sensors.registerListener(this, rotationVector, SensorManager.SENSOR_DELAY_GAME);
+        }
     }
 
     @Override protected void onPause() {
+        gravityRebasePending = steeringDriftObserver.hasReference();
         sensors.unregisterListener(this);
+        stopFusedOrientation();
         super.onPause();
     }
 
@@ -163,6 +256,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         if (inputFuture != null) inputFuture.cancel(true);
         if (pingFuture != null) pingFuture.cancel(true);
         networkExecutor.shutdownNow();
+        orientationExecutor.shutdownNow();
         if (net != null) net.stop();
         stopOffRoadRumble();
         super.onDestroy();
@@ -171,6 +265,7 @@ public class MainActivity extends Activity implements SensorEventListener {
     @Override public void onSensorChanged(SensorEvent e) {
         if (e.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
             currentGravity = e.values.clone();
+            currentAccelerometerTimestampNs = e.timestamp;
             if (filteredGravity == null) {
                 filteredGravity = e.values.clone();
             } else {
@@ -182,12 +277,26 @@ public class MainActivity extends Activity implements SensorEventListener {
                 filteredGravity[2] += (e.values[2] - filteredGravity[2]) * gravityAlpha;
             }
             
+            if (gravitySensor == null) {
+                currentGravityReference = filteredGravity.clone();
+                currentGravityReferenceTimestampNs = e.timestamp;
+                capturePendingGravityReference();
+            }
             float norm = (float)Math.sqrt(e.values[0]*e.values[0] + e.values[1]*e.values[1] + e.values[2]*e.values[2]);
             if (norm > 0) {
                 float pitch = (float)Math.toDegrees(Math.asin(clamp(e.values[1]/norm, -1f, 1f)));
                 tiltAngle = clamp(pitch, -45f, 45f);
             }
-        } 
+        }
+        else if (e.sensor.getType() == Sensor.TYPE_GRAVITY) {
+            currentGravityReference = e.values.clone();
+            currentGravityReferenceTimestampNs = e.timestamp;
+            capturePendingGravityReference();
+        }
+        else if (e.sensor.getType() == Sensor.TYPE_LINEAR_ACCELERATION) {
+            currentLinearAcceleration = e.values.clone();
+            currentLinearAccelerationTimestampNs = e.timestamp;
+        }
         else if (e.sensor.getType() == Sensor.TYPE_GYROSCOPE) {
             if (lastGyroNs == 0L) {
                 lastGyroNs = e.timestamp;
@@ -217,9 +326,9 @@ public class MainActivity extends Activity implements SensorEventListener {
                             (correctedRate - filteredGyroRateDegPerSec) * filterAlpha;
                 }
 
-                // Learn residual gyro bias only after the corrected rate has been
-                // very close to zero for a short period. No angle/gravity-based
-                // correction is applied, so steering cannot be pulled toward zero.
+                // Learn residual gyro bias only during near-stationary periods.
+                // The separate gravity observer handles position drift; this bias
+                // learner never resets steering toward zero.
                 float accelNorm = 0f;
                 if (currentGravity != null) {
                     accelNorm = (float)Math.sqrt(
@@ -241,104 +350,150 @@ public class MainActivity extends Activity implements SensorEventListener {
                     stationarySinceNs = 0L;
                 }
 
+                // Gyroscope is the continuous steering source. Absolute heading
+                // sensors can jump when the magnetometer is disturbed; using their
+                // yaw as the steering angle caused the observed 30-degree offset.
+                // Integrate the calibrated local Z rate for smooth multi-turn travel.
                 rawGyroIntegratedDeg += filteredGyroRateDegPerSec * dt;
+                applyGravityDriftCorrection();
 
-                // Anchor recovery refinement:
-                // Only correct while the phone is moving back toward the calibrated
-                // pose, or when it is extremely close to that pose. This avoids pulling
-                // a deliberate 1-4 degree curve toward zero just because it is small.
-                // Once the phone returns to neutral, a slightly stronger smooth settle
-                // removes residual accumulated gyro offset without requiring a long hold.
-                if (calibrationGravity != null && filteredGravity != null
-                        && gravityMagnitudePlausible) {
-                    float turnSpeedDegPerSec = Math.abs(correctedRate);
-                    float dot =
-                            calibrationGravity[0] * filteredGravity[0] +
-                            calibrationGravity[1] * filteredGravity[1] +
-                            calibrationGravity[2] * filteredGravity[2];
+                // Gravity is used only as a confidence-gated physical reference.
+                // The gyro remains the continuous multi-revolution source; this
+                // correction never targets zero unless the phone physically returns
+                // to its manually calibrated orientation.
 
-                    float normCalib = (float)Math.sqrt(
-                            calibrationGravity[0] * calibrationGravity[0] +
-                            calibrationGravity[1] * calibrationGravity[1] +
-                            calibrationGravity[2] * calibrationGravity[2]);
-                    float normCurr = (float)Math.sqrt(
-                            filteredGravity[0] * filteredGravity[0] +
-                            filteredGravity[1] * filteredGravity[1] +
-                            filteredGravity[2] * filteredGravity[2]);
-
-                    if (normCalib > 0f && normCurr > 0f) {
-                        float cosTheta = clamp(dot / (normCalib * normCurr), -1f, 1f);
-                        float referenceDeviationDeg =
-                                (float)Math.toDegrees(Math.acos(cosTheta));
-
-                        // A falling gravity deviation indicates return toward neutral.
-                        // The very small neutral zone also permits stationary residual
-                        // drift to settle once the phone is physically back at its anchor.
-                        boolean approachingReference =
-                                !Float.isNaN(previousReferenceDeviationDeg)
-                                && referenceDeviationDeg < previousReferenceDeviationDeg - 0.015f;
-                        previousReferenceDeviationDeg = referenceDeviationDeg;
-
-                        float currentError = rawGyroIntegratedDeg - zeroCorrectionOffset;
-                        // Gravity repeats after a full turn; don't erase intentional
-                        // multi-turn steering based on a repeated gravity orientation.
-                        boolean sameTurnBranch = Math.abs(currentError) < 180f;
-                        final float REFERENCE_RECOVERY_WINDOW_DEG = 5.5f;
-                        final float TIGHT_NEUTRAL_ZONE_DEG = 0.80f;
-                        boolean physicallyNearNeutral =
-                                referenceDeviationDeg <= TIGHT_NEUTRAL_ZONE_DEG;
-                        boolean recoveryAllowed = sameTurnBranch
-                                && (approachingReference || physicallyNearNeutral)
-                                && referenceDeviationDeg < REFERENCE_RECOVERY_WINDOW_DEG;
-
-                        if (recoveryAllowed) {
-                            float anchorCloseness = clamp(
-                                    1f - referenceDeviationDeg / REFERENCE_RECOVERY_WINDOW_DEG,
-                                    0f, 1f);
-                            float proximityWeight = anchorCloseness * anchorCloseness;
-
-                            // Smoothly damp correction during movement. At the true
-                            // neutral pose use the stronger settling rate to clear the
-                            // last residual offset promptly; never force a broad small-angle reset.
-                            float speedDamping = clamp(1f - turnSpeedDegPerSec / 18f,
-                                    0.30f, 1f);
-                            float settlingRate = physicallyNearNeutral ? 0.20f : 0.12f;
-                            zeroCorrectionOffset += currentError * proximityWeight
-                                    * speedDamping * settlingRate * (dt * 60f);
-                        }
-                    } else {
-                        previousReferenceDeviationDeg = Float.NaN;
-                    }
-                } else {
-                    previousReferenceDeviationDeg = Float.NaN;
-                }
-
-                // Smoothly fade the calibration offset over 250 ms. This preserves
-                // continuity at the button press while making the new neutral zero.
-                float fade = 1f;
-                if (calibrationFadeStartNs != 0L) {
-                    float elapsed = (e.timestamp - calibrationFadeStartNs) /
-                            (float) CALIBRATION_FADE_NS;
-                    if (elapsed >= 1f) {
-                        calibrationFadeOffsetDeg = 0f;
-                        calibrationFadeStartNs = 0L;
-                    } else {
-                        float t = clamp(elapsed, 0f, 1f);
-                        fade = t * t * (3f - 2f * t); // smoothstep
-                    }
-                }
-                float outputOffset = calibrationFadeStartNs == 0L
-                        ? calibrationFadeOffsetDeg : calibrationFadeOffsetDeg * (1f - fade);
-                float half = view == null ? 450f : view.rangeDeg / 2f;
-                gyroAngle = clamp(rawGyroIntegratedDeg - zeroCorrectionOffset + outputOffset,
-                        -half, half);
+                rotationVectorSteeringActive = false;
+                updateSteeringOutput(e.timestamp);
             }
+        } else if (e.sensor.getType() == Sensor.TYPE_ROTATION_VECTOR) {
+            float[] q = new float[4];
+            SensorManager.getQuaternionFromVector(q, e.values);
+            currentRotationQuaternion = q;
+            updateRotationVectorSteering(e.timestamp);
         }
         if (view != null) view.invalidate();
     }
 
     /**
-     * Converts phone gyro rotation into relative mouse deltas for the interior
+     * Extract the calibrated phone-local Z twist from an absolute fused attitude.
+     * FOP supplies a world-referenced quaternion, so this is an absolute relative
+     * pose calculation rather than an indefinitely integrated gyro-rate angle.
+     * Pure pitch/roll swing is discarded by the swing-twist projection.
+     */
+    private void updateRotationVectorSteering(long timestampNs) {
+        if (currentRotationQuaternion == null) return;
+        if (calibratedRotationQuaternion == null) {
+            calibratedRotationQuaternion = currentRotationQuaternion.clone();
+            previousRotationTwistDeg = Float.NaN;
+            rotationVectorIntegratedDeg = 0f;
+            rotationVectorSteeringActive = true;
+            updateSteeringOutput(timestampNs);
+            return;
+        }
+
+        float[] c = calibratedRotationQuaternion;
+        float[] q = currentRotationQuaternion;
+        // FOP's attitude is supplied as [w,x,y,z] after Android conversion.
+        // Relative quaternion: conjugate(calibrated) * current.
+        float rw = c[0] * q[0] + c[1] * q[1] + c[2] * q[2] + c[3] * q[3];
+        float rz = c[0] * q[3] - c[1] * q[2] + c[2] * q[1] - c[3] * q[0];
+
+        // Twist about calibrated local Z only. X/Y swing (pitch/roll) is discarded.
+        float twistNorm = (float)Math.sqrt(rw * rw + rz * rz);
+        if (twistNorm < 1.0e-6f) return;
+        rw /= twistNorm;
+        rz /= twistNorm;
+        // Negative sign preserves TruckTilt's established left/right convention.
+        float twistDeg = -normalizeDelta(
+                (float)Math.toDegrees(2.0 * Math.atan2(rz, rw)));
+
+        // Quaternion twist is periodic (it wraps every 360 degrees), but a
+        // steering wheel must be able to travel continuously through its full
+        // configured range. Unwrap only the small change between consecutive
+        // fused samples, then clamp the accumulated relative angle at the
+        // physical steering lock. This is not gyro-rate integration: each step
+        // is the difference between two absolute fused orientations.
+        if (Float.isNaN(previousRotationTwistDeg)) {
+            previousRotationTwistDeg = twistDeg;
+            rotationVectorIntegratedDeg = 0f;
+        } else {
+            float sampleDelta = normalizeDelta(twistDeg - previousRotationTwistDeg);
+            previousRotationTwistDeg = twistDeg;
+            float halfRange = view == null ? 450f : view.rangeDeg / 2f;
+            rotationVectorIntegratedDeg = clamp(
+                    rotationVectorIntegratedDeg + sampleDelta,
+                    -halfRange,
+                    halfRange
+            );
+        }
+        rotationVectorSteeringActive = true;
+        updateSteeringOutput(timestampNs);
+    }
+
+    private void capturePendingGravityReference() {
+        if (currentGravityReference == null || currentGravityReferenceTimestampNs <= 0L) return;
+        if (manualGravityCalibrationPending) {
+            if (steeringDriftObserver.calibrate(currentGravityReference, 0f,
+                    currentGravityReferenceTimestampNs)) {
+                manualGravityCalibrationPending = false;
+                gravityRebasePending = false;
+            }
+        } else if (gravityRebasePending && steeringDriftObserver.hasReference()) {
+            if (steeringDriftObserver.calibrate(currentGravityReference, rawGyroIntegratedDeg,
+                    currentGravityReferenceTimestampNs)) {
+                gravityRebasePending = false;
+            }
+        }
+    }
+
+    private void applyGravityDriftCorrection() {
+        if (currentGravityReference == null || currentGravityReferenceTimestampNs <= 0L) return;
+        float[] linear = currentLinearAcceleration;
+        if (linear == null || currentLinearAccelerationTimestampNs <= 0L
+                || Math.abs(currentGravityReferenceTimestampNs - currentLinearAccelerationTimestampNs)
+                    > 150_000_000L) {
+            if (currentGravity != null && currentAccelerometerTimestampNs > 0L
+                    && Math.abs(currentGravityReferenceTimestampNs - currentAccelerometerTimestampNs)
+                        <= 150_000_000L) {
+                linear = new float[]{
+                        currentGravity[0] - currentGravityReference[0],
+                        currentGravity[1] - currentGravityReference[1],
+                        currentGravity[2] - currentGravityReference[2]
+                };
+            } else {
+                linear = null;
+            }
+        }
+        rawGyroIntegratedDeg = steeringDriftObserver.correct(
+                rawGyroIntegratedDeg, currentGravityReference, linear,
+                currentGravityReferenceTimestampNs);
+    }
+
+    private void updateSteeringOutput(long timestampNs) {
+        float fade = 1f;
+        if (calibrationFadeStartNs != 0L) {
+            float elapsed = (timestampNs - calibrationFadeStartNs) /
+                    (float) CALIBRATION_FADE_NS;
+            if (elapsed >= 1f) {
+                calibrationFadeOffsetDeg = 0f;
+                calibrationFadeStartNs = 0L;
+            } else {
+                float t = clamp(elapsed, 0f, 1f);
+                fade = t * t * (3f - 2f * t);
+            }
+        }
+        float outputOffset = calibrationFadeStartNs == 0L
+                ? calibrationFadeOffsetDeg : calibrationFadeOffsetDeg * (1f - fade);
+        // Do not let magnetometer-referenced quaternion yaw overwrite the
+        // continuous steering integrator. Gyro bias learning above keeps the
+        // integrated rate stable while preserving multi-turn steering range.
+        float sourceAngle = rawGyroIntegratedDeg - zeroCorrectionOffset;
+        float half = view == null ? 450f : view.rangeDeg / 2f;
+        gyroAngle = clamp(sourceAngle + outputOffset, -half, half);
+    }
+
+    /**
+     * Converts phone gyro rotation into relative mouse deltas for the interior camera. into relative mouse deltas for the interior
      * camera. Entering virtual-wheel mode establishes a fresh neutral reference;
      * rotating back to that orientation emits reverse deltas and restores the view.
      * This method intentionally does not read or write any steering state.
@@ -463,6 +618,25 @@ public class MainActivity extends Activity implements SensorEventListener {
         } catch (Exception ignored) { }
     }
 
+    void handleCalibrationResponse(String message) {
+        String[] p = message.trim().split("\\|");
+        if (p.length < 3) return;
+        final boolean accepted = "ACCEPTED".equalsIgnoreCase(p[1]);
+        final String reason = p[2];
+        runOnUiThread(() -> {
+            if (!calibrationRequestPending) return;
+            calibrationRequestPending = false;
+            if (accepted) {
+                Toast.makeText(this, "Gyro calibrated — game telemetry active", Toast.LENGTH_SHORT).show();
+            } else {
+                String notice = "Gyro calibrated locally";
+                if ("NO_ACTIVE_TELEMETRY".equalsIgnoreCase(reason))
+                    notice = "Gyro calibrated locally — ETS2/ATS telemetry is not active";
+                Toast.makeText(this, notice, Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+
     void handleHapticMessage(String message) {
         if (!hapticsEnabled || vibrator == null || !vibrator.hasVibrator()) return;
         final String type = message.trim().toUpperCase(Locale.US);
@@ -560,12 +734,106 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     void calibrate() {
+        if (view == null || view.mode != 0) {
+            applyCalibration();
+            return;
+        }
+
+        // Calibration must break the gyro/game feedback loop: immediately make
+        // the current phone orientation the new zero and send neutral steering.
+        // Game telemetry is informational; it must not block local calibration.
+        applyGyroCalibrationImmediate();
+
+        if (net == null || !net.connected) {
+            Toast.makeText(this, "Gyro calibrated locally — host unavailable", Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (calibrationRequestPending) return;
+        calibrationRequestPending = true;
+        calibrationRequestStartedMs = System.currentTimeMillis();
+        Toast.makeText(this, "Gyro calibrated — checking game telemetry…", Toast.LENGTH_SHORT).show();
+
+        final UdpClient calibrationNet = net;
+        networkExecutor.execute(() -> {
+            StrictMode.setThreadPolicy(
+                    new StrictMode.ThreadPolicy.Builder(StrictMode.getThreadPolicy())
+                            .permitNetwork()
+                            .build());
+            if (!calibrationNet.requestCalibration()) {
+                String detail = calibrationNet.lastSendError == null
+                        ? "unknown network error" : calibrationNet.lastSendError;
+                runOnUiThread(() -> {
+                    if (!calibrationRequestPending) return;
+                    calibrationRequestPending = false;
+                    Toast.makeText(this, "Gyro calibrated locally; host check failed (" + detail + ")",
+                            Toast.LENGTH_LONG).show();
+                });
+            }
+        });
+        networkExecutor.schedule(() -> runOnUiThread(() -> {
+            if (calibrationRequestPending && System.currentTimeMillis() - calibrationRequestStartedMs >= 1800L) {
+                calibrationRequestPending = false;
+                Toast.makeText(this, "Gyro calibrated locally; no telemetry reply", Toast.LENGTH_LONG).show();
+            }
+        }), 1900, TimeUnit.MILLISECONDS);
+    }
+
+    private void captureGravityReferenceForManualZero() {
+        gravityRebasePending = false;
+        if (currentGravityReference != null && currentGravityReferenceTimestampNs > 0L
+                && steeringDriftObserver.calibrate(currentGravityReference, 0f,
+                    currentGravityReferenceTimestampNs)) {
+            manualGravityCalibrationPending = false;
+        } else {
+            steeringDriftObserver.reset();
+            manualGravityCalibrationPending = true;
+        }
+    }
+
+    void applyGyroCalibrationImmediate() {
+        calibrationFadeOffsetDeg = 0f;
+        calibrationFadeStartNs = 0L;
+        rawGyroIntegratedDeg = 0f;
+        zeroCorrectionOffset = 0f;
+        rotationVectorIntegratedDeg = 0f;
+        previousRotationTwistDeg = Float.NaN;
+        calibratedRotationQuaternion = currentRotationQuaternion == null
+                ? null : currentRotationQuaternion.clone();
+        rotationVectorSteeringActive = false;
+        previousReferenceDeviationDeg = Float.NaN;
+        referenceRecoveryArmed = false;
+        filteredGyroRateDegPerSec = 0f;
+        gyroRateFilterInitialized = false;
+        lastGyroNs = 0L;
+        stationarySinceNs = 0L;
+        gyroAngle = 0f;
+
+        if (filteredGravity != null) {
+            calibrationGravity = filteredGravity.clone();
+        } else if (currentGravity != null) {
+            calibrationGravity = currentGravity.clone();
+        }
+        captureGravityReferenceForManualZero();
+
+        if (view != null) {
+            view.wheelAngleDeg = 0f;
+            view.steer = 0f;
+            view.invalidate();
+        }
+    }
+
+    void applyCalibration() {
         // Rebase steering to zero without an instantaneous jump in the displayed
         // wheel. The offset fades out smoothly while new gyro motion is integrated.
         calibrationFadeOffsetDeg = gyroAngle;
         calibrationFadeStartNs = android.os.SystemClock.elapsedRealtimeNanos();
         rawGyroIntegratedDeg = 0f;
         zeroCorrectionOffset = 0f;
+        rotationVectorIntegratedDeg = 0f;
+        previousRotationTwistDeg = Float.NaN;
+        calibratedRotationQuaternion = currentRotationQuaternion == null
+                ? null : currentRotationQuaternion.clone();
+        rotationVectorSteeringActive = calibratedRotationQuaternion != null;
         previousReferenceDeviationDeg = Float.NaN;
         filteredGyroRateDegPerSec = 0f;
         gyroRateFilterInitialized = false;
@@ -577,6 +845,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         } else if (currentGravity != null) {
             calibrationGravity = currentGravity.clone();
         }
+        captureGravityReferenceForManualZero();
 
         if (view != null) {
             view.wheelAngleDeg = 0f;
@@ -1450,6 +1719,8 @@ public class MainActivity extends Activity implements SensorEventListener {
                     } else if(s.startsWith("WELCOME|")) connected=true;
                     else if(s.startsWith("HUD|")){
                         handleTelemetryHud(s);
+                    } else if(s.startsWith("CALIBRATION|")){
+                        handleCalibrationResponse(s);
                     } else if(s.startsWith("HAPTIC|")){
                         String payload = s.substring(7).trim();
                         if(!payload.isEmpty()) handleHapticMessage(payload);
@@ -1493,6 +1764,26 @@ public class MainActivity extends Activity implements SensorEventListener {
             }catch(Exception ex){ lastSendError=ex.getClass().getSimpleName(); }
             long now=System.currentTimeMillis();
             if(now-rateWindowStart>=1000){rate=(int)rateWindowPackets;rateWindowPackets=0;rateWindowStart=now;}
+        }
+
+        boolean requestCalibration() {
+            if (!connected) {
+                lastSendError = "host_not_connected";
+                return false;
+            }
+            if (host == null) {
+                lastSendError = "host_address_missing";
+                connected = false;
+                return false;
+            }
+            try {
+                sendRaw("CALIBRATE|" + System.currentTimeMillis(), host, hostPort);
+                lastSendError = null;
+                return true;
+            } catch (Exception ex) {
+                lastSendError = ex.getClass().getSimpleName() + (ex.getMessage() == null ? "" : ": " + ex.getMessage());
+                return false;
+            }
         }
 
         void sendPing(){ if(!connected||host==null)return; try{sendRaw("PING|"+System.currentTimeMillis(),host,hostPort);}catch(Exception ex){lastSendError=ex.getClass().getSimpleName();} }
