@@ -376,11 +376,25 @@ public class MainActivity extends Activity implements SensorEventListener {
         float twistDeg = -normalizeDelta(
                 (float)Math.toDegrees(2.0 * Math.atan2(rz, rw)));
 
-        // This is an absolute angle relative to the saved calibration quaternion.
-        // Do NOT integrate per-sample deltas: that would reintroduce accumulated drift.
-        // A fresh fused attitude directly replaces the previous steering angle.
-        rotationVectorIntegratedDeg = twistDeg;
-        previousRotationTwistDeg = twistDeg;
+        // Quaternion twist is periodic (it wraps every 360 degrees), but a
+        // steering wheel must be able to travel continuously through its full
+        // configured range. Unwrap only the small change between consecutive
+        // fused samples, then clamp the accumulated relative angle at the
+        // physical steering lock. This is not gyro-rate integration: each step
+        // is the difference between two absolute fused orientations.
+        if (Float.isNaN(previousRotationTwistDeg)) {
+            previousRotationTwistDeg = twistDeg;
+            rotationVectorIntegratedDeg = 0f;
+        } else {
+            float sampleDelta = normalizeDelta(twistDeg - previousRotationTwistDeg);
+            previousRotationTwistDeg = twistDeg;
+            float halfRange = view == null ? 450f : view.rangeDeg / 2f;
+            rotationVectorIntegratedDeg = clamp(
+                    rotationVectorIntegratedDeg + sampleDelta,
+                    -halfRange,
+                    halfRange
+            );
+        }
         rotationVectorSteeringActive = true;
         updateSteeringOutput(timestampNs);
     }
